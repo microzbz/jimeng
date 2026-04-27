@@ -1,0 +1,197 @@
+{
+  "timestamp": "2026-04-27T05:52:45+08:00",
+  "project": "dreamina-auto-register",
+  "version": "2.2.0",
+  "root_claude_md": "CLAUDE.md",
+  "modules": [
+    {
+      "name": "backend/app",
+      "language": "Python",
+      "entry": "backend/app/main.py",
+      "api_routes": [
+        "backend/app/api/routers/tasks.py",
+        "backend/app/api/routers/accounts.py",
+        "backend/app/api/routers/proxies.py",
+        "backend/app/api/routers/domains.py",
+        "backend/app/api/routers/settings.py",
+        "backend/app/api/routers/dashboard.py",
+        "backend/app/api/routers/websocket.py",
+        "backend/app/api/routers/outlook_mailboxes.py",
+        "backend/app/api/routers/content_generation.py"
+      ],
+      "models": [
+        "backend/app/models/account.py",
+        "backend/app/models/task_record.py",
+        "backend/app/models/email_domain.py",
+        "backend/app/models/proxy_node.py",
+        "backend/app/models/outlook_mailbox.py",
+        "backend/app/models/content_generation_job.py"
+      ],
+      "services": [
+        "backend/app/services/register_engine.py",
+        "backend/app/services/task_scheduler.py",
+        "backend/app/services/proxy_pool.py",
+        "backend/app/services/proxy_pool_runner.py",
+        "backend/app/services/clash_manager.py",
+        "backend/app/services/cloudflare_kv.py",
+        "backend/app/services/jimeng_api.py",
+        "backend/app/services/browser_stealth.py",
+        "backend/app/services/human_behavior.py",
+        "backend/app/services/random_generator.py",
+        "backend/app/services/outlook_client.py",
+        "backend/app/services/content_generation.py",
+        "backend/app/services/task_service.py",
+        "backend/app/services/db_migration.py"
+      ],
+      "tests": [],
+      "config": ["backend/.env.example", "backend/requirements.txt"],
+      "claude_md": "backend/app/CLAUDE.md"
+    },
+    {
+      "name": "backend/jimeng_service",
+      "language": "TypeScript",
+      "entry": "backend/jimeng_service/src/index.ts",
+      "api_routes": [
+        "backend/jimeng_service/src/api/routes/index.ts",
+        "backend/jimeng_service/src/api/routes/images.ts",
+        "backend/jimeng_service/src/api/routes/videos.ts",
+        "backend/jimeng_service/src/api/routes/tasks.ts",
+        "backend/jimeng_service/src/api/routes/token.ts",
+        "backend/jimeng_service/src/api/routes/models.ts",
+        "backend/jimeng_service/src/api/routes/ping.ts"
+      ],
+      "controllers": [
+        "backend/jimeng_service/src/api/controllers/core.ts",
+        "backend/jimeng_service/src/api/controllers/images.ts",
+        "backend/jimeng_service/src/api/controllers/videos.ts",
+        "backend/jimeng_service/src/api/controllers/task-poller.ts"
+      ],
+      "tests": [],
+      "config": [
+        "backend/jimeng_service/package.json",
+        "backend/jimeng_service/tsconfig.json",
+        "backend/jimeng_service/configs/dev/service.yml",
+        "backend/jimeng_service/configs/dev/system.yml"
+      ],
+      "claude_md": "backend/jimeng_service/CLAUDE.md"
+    },
+    {
+      "name": "frontend",
+      "language": "TypeScript/React",
+      "entry": "frontend/src/main.tsx",
+      "pages": [
+        "frontend/src/pages/Dashboard.tsx",
+        "frontend/src/pages/Tasks.tsx",
+        "frontend/src/pages/Accounts.tsx",
+        "frontend/src/pages/Proxies.tsx",
+        "frontend/src/pages/Domains.tsx",
+        "frontend/src/pages/OutlookMailboxes.tsx",
+        "frontend/src/pages/ContentGeneration.tsx",
+        "frontend/src/pages/Logs.tsx",
+        "frontend/src/pages/Settings.tsx"
+      ],
+      "tests": [],
+      "config": [
+        "frontend/package.json",
+        "frontend/vite.config.ts",
+        "frontend/tsconfig.json",
+        "frontend/tailwind.config.js"
+      ],
+      "claude_md": "frontend/CLAUDE.md"
+    },
+    {
+      "name": "cloudflare-worker",
+      "language": "TypeScript",
+      "entry": "cloudflare-worker/src/index.ts",
+      "tests": [],
+      "config": [
+        "cloudflare-worker/wrangler.toml",
+        "cloudflare-worker/package.json"
+      ],
+      "claude_md": "cloudflare-worker/CLAUDE.md"
+    },
+    {
+      "name": "dreamina2api",
+      "language": "TypeScript",
+      "entry": "dreamina2api/src/index.ts",
+      "tests": [],
+      "config": [
+        "dreamina2api/package.json",
+        "dreamina2api/tsconfig.json"
+      ],
+      "claude_md": "dreamina2api/CLAUDE.md"
+    }
+  ],
+  "coverage": {
+    "total_source_files_estimated": 105,
+    "scanned_files": 98,
+    "coverage_percent": 93.3,
+    "truncated": false,
+    "last_updated": "2026-04-27T06:10:00+08:00",
+    "supplementary_scans": [
+      {
+        "area": "backend/app/services/ (反检测子系统)",
+        "files_scanned": 6,
+        "date": "2026-04-27"
+      },
+      {
+        "area": "backend/app/api/routers/",
+        "files_scanned": 9,
+        "endpoints_documented": 60,
+        "date": "2026-04-27"
+      },
+      {
+        "area": "backend/jimeng_service/src/",
+        "files_scanned": 39,
+        "date": "2026-04-27"
+      },
+      {
+        "area": "frontend/src/pages/",
+        "files_scanned": 12,
+        "date": "2026-04-27"
+      }
+    ],
+    "gaps": [
+      {
+        "module": "backend/app",
+        "missing": ["tests"]
+      },
+      {
+        "module": "backend/jimeng_service",
+        "missing": ["tests"]
+      },
+      {
+        "module": "frontend",
+        "missing": ["tests"]
+      },
+      {
+        "module": "cloudflare-worker",
+        "missing": ["tests"]
+      },
+      {
+        "module": "dreamina2api",
+        "missing": ["tests", "detailed_scan"]
+      }
+    ]
+  },
+  "ignored": {
+    "patterns": [
+      "node_modules/**",
+      ".venv/**",
+      "dist/**",
+      "build/**",
+      "*.lock",
+      "*.log",
+      "*.db",
+      "*.png",
+      "*.jpg"
+    ],
+    "top_skipped_dirs": [
+      "backend/.venv",
+      "backend/jimeng_service/node_modules",
+      "frontend/node_modules",
+      "backend/data",
+      "backend/logs"
+    ]
+  }
+}
