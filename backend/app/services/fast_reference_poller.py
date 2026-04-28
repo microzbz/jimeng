@@ -1,234 +1,203 @@
 """
-快速参考视频生成 — 视频轮询器
+FastReferencePoller — 视频生成状态轮询与下载
 """
 
-import asyncio
 import hashlib
 import logging
 import random
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import urlencode, urlparse
+from typing import Optional, Tuple
 
 import httpx
 
-from app.core.config import settings, BASE_DIR
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-REGION_PROFILES = [
-    {"region": "TW", "name": "Taiwan"},
-    {"region": "HK", "name": "Hong Kong"},
-    {"region": "TH", "name": "Thailand"},
-]
-
-API_BASE = "https://mweb-api-sg.capcut.com"
-APP_ID = 513641
-WEB_VERSION = "7.5.0"
-DA_VERSION = "3.3.12"
-APP_VERSION = "8.4.0"
-
-STATUS_SUCCESS = {10, 50}
-STATUS_FAILED = {30}
+BASE_URL = "https://mweb-api-sg.capcut.com"
+POLL_PATH = "/mweb/v1/get_history_by_ids"
+AID = "513641"
+PLATFORM_CODE = "7"
+VERSION_CODE = "8.4.0"
 
 
-def _generate_did() -> str:
-    return "".join([str(random.randint(0, 9)) for _ in range(19)])
-
-
-def _build_api_url(path: str, region: str) -> str:
-    did = _generate_did()
-    params = {
-        "aid": APP_ID,
-        "device_platform": "web",
-        "region": region,
-        "did": did,
-        "da_version": DA_VERSION,
-        "os": "windows",
-        "web_component_open_flag": "1",
-        "commerce_with_input_video": "1",
-        "web_version": WEB_VERSION,
-    }
-    return f"{API_BASE}{path}?{urlencode(params)}"
-
-
-def _sign_request(url: str) -> Dict[str, str]:
-    pathname = urlparse(url).path
+def _sign_11ac(pathname: str) -> Tuple[str, str]:
     device_time = str(int(time.time()))
-    raw = f"9e2c|{pathname}|web|{APP_VERSION}|{device_time}||1e67"
-    sign_value = hashlib.md5(raw.encode()).hexdigest()
-    return {
-        "sign": sign_value,
-        "sign-ver": "1",
-        "device-time": device_time,
-    }
+    raw = f"9e2c|{pathname[-7:]}|{PLATFORM_CODE}|{VERSION_CODE}|{device_time}||11ac"
+    sign = hashlib.md5(raw.encode()).hexdigest()
+    return sign, device_time
 
 
-@dataclass
-class PollResult:
-    success: bool = False
-    video_url: Optional[str] = None
-    status_code: Optional[int] = None
-    error: Optional[str] = None
-    region_used: Optional[str] = None
-    local_path: Optional[str] = None
+def _sign_1e67(pathname: str) -> Tuple[str, str]:
+    device_time = str(int(time.time()))
+    raw = f"9e2c|{pathname}|web|{VERSION_CODE}|{device_time}||1e67"
+    sign = hashlib.md5(raw.encode()).hexdigest()
+    return sign, device_time
 
 
 class FastReferencePoller:
 
-    def __init__(self, session_id: str, proxy_url: Optional[str] = None):
-        self.session_id = session_id
-        self.proxy_url = proxy_url
+    @staticmethod
+    async def poll_video_status(
+        session_id: str,
+        history_id: str,
+        region: str = "SG",
+    ) -> Optional[dict]:
+        did = str(random.randint(10**18, 10**19 - 1))
+        params = {
+            "aid": AID,
+            "device_platform": "web",
+            "region": region,
+            "did": did,
+        }
 
-    async def poll_until_done(
-        self,
-        task_id: str,
-        max_polls: int = 60,
-        interval: int = 0,
-        regions: Optional[List[str]] = None,
-    ) -> PollResult:
-        if interval <= 0:
-            interval = settings.fast_poll_interval
-        if regions is None:
-            regions = [r["region"] for r in REGION_PROFILES]
+        sign, device_time = _sign_11ac(POLL_PATH)
+        headers = {
+            "Content-Type": "application/json",
+            "Cookie": f"sessionid={session_id}",
+            "Device-Time": device_time,
+            "Sign": sign,
+            "Sign-Ver": "1",
+            "Origin": "https://dreamina.capcut.com",
+            "Referer": "https://dreamina.capcut.com",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+            "Appvr": VERSION_CODE,
+            "Pf": PLATFORM_CODE,
+        }
 
-        for attempt in range(max_polls):
-            result = await self._poll_once(task_id, regions)
+        body = {
+            "history_ids": [history_id],
+            "submit_ids": [history_id],
+        }
 
-            if result.success and result.video_url:
-                logger.info(
-                    f"[Poller] video ready after {attempt + 1} polls "
-                    f"(region={result.region_used})"
-                )
-                return result
+        url = f"{BASE_URL}{POLL_PATH}"
 
-            if result.status_code and result.status_code in STATUS_FAILED:
-                logger.warning(f"[Poller] generation failed: status={result.status_code}")
-                return PollResult(
-                    success=False,
-                    status_code=result.status_code,
-                    error="remote generation failed",
-                    region_used=result.region_used,
-                )
-
-            await asyncio.sleep(interval)
-
-        return PollResult(success=False, error=f"timeout after {max_polls} polls")
-
-    async def _poll_once(
-        self, task_id: str, regions: List[str]
-    ) -> PollResult:
-        for region in regions:
-            url = _build_api_url("/mweb/v1/get_history_by_ids", region)
-            sign_headers = _sign_request(url)
-
-            headers = {
-                "Cookie": f"sessionid={self.session_id}",
-                "Content-Type": "application/json",
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-                "Origin": "https://dreamina.capcut.com",
-                "Referer": "https://dreamina.capcut.com/",
-                "app-sdk-version": "48.0.0",
-                "appid": str(APP_ID),
-                "appvr": APP_VERSION,
-                "pf": "7",
-                **sign_headers,
-            }
-
-            payload = {
-                "history_ids": [task_id],
-                "submit_ids": [task_id],
-            }
-
+        async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                async with httpx.AsyncClient(
-                    timeout=30.0, proxy=self.proxy_url
-                ) as client:
-                    resp = await client.post(url, json=payload, headers=headers)
-                    resp.raise_for_status()
-                    data = resp.json()
+                resp = await client.post(
+                    url, json=body, params=params, headers=headers
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                result = FastReferencePoller._extract_result(data)
+                if result is not None:
+                    return result
+                logger.warning("11ac poll returned empty, trying 1e67")
+            except Exception as exc:
+                logger.warning("11ac poll failed, trying 1e67: %s", exc)
 
-                if data.get("ret") == "0" or data.get("status_code") == 0:
-                    video_url, status_code = self._extract_result(data)
-                    if video_url:
-                        return PollResult(
-                            success=True,
-                            video_url=video_url,
-                            status_code=status_code,
-                            region_used=region,
-                        )
-                    return PollResult(
-                        success=False,
-                        status_code=status_code,
-                        region_used=region,
-                    )
-            except Exception as e:
-                logger.debug(f"[Poller] region {region} failed: {e}")
-                continue
-
-        return PollResult(success=False, error="all regions failed")
+            sign2, device_time2 = _sign_1e67(POLL_PATH)
+            headers["Sign"] = sign2
+            headers["Device-Time"] = device_time2
+            try:
+                resp = await client.post(
+                    url, json=body, params=params, headers=headers
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return FastReferencePoller._extract_result(data)
+            except Exception as exc:
+                logger.error("1e67 poll also failed: %s", exc)
+                return None
 
     @staticmethod
-    def _extract_result(data: dict) -> tuple:
+    def _extract_result(data: dict) -> Optional[dict]:
+        history_list = data.get("data", {}).get("history_list", [])
+        if not history_list:
+            return None
+
+        item = history_list[0]
+        finish_time = item.get("finish_time", 0)
+        status = item.get("status", 0)
+
+        if status == 30:
+            return {"status": "failed", "error": "remote_generation_failed"}
+
+        if finish_time == 0 and status not in (10, 50):
+            return {"status": "processing"}
+
+        item_list = item.get("item_list", [])
+        if not item_list:
+            return {"status": "processing"}
+
+        video_item = item_list[0]
+        video_url = None
+
         try:
-            histories = data.get("data", {}).get("histories", [])
-            if not histories:
-                return None, None
+            video_url = (
+                video_item.get("video", {})
+                .get("transcoded_video", {})
+                .get("origin", {})
+                .get("video_url")
+            )
+        except Exception:
+            pass
 
-            history = histories[0]
-            item_list = history.get("item_list", [])
-            status = history.get("status")
+        if not video_url:
+            try:
+                video_url = video_item.get("video", {}).get("video_url")
+            except Exception:
+                pass
 
-            if not item_list:
-                return None, status
+        if video_url:
+            return {"status": "success", "video_url": video_url}
 
-            finish_time = history.get("finish_time", 0)
-            if not finish_time:
-                return None, status
+        return {"status": "processing"}
 
-            video_item = item_list[0]
-            video_data = video_item.get("video", {})
+    @staticmethod
+    async def poll_with_region_degradation(
+        session_id: str,
+        history_id: str,
+        primary_region: Optional[str] = None,
+    ) -> Tuple[Optional[dict], Optional[str]]:
+        regions = []
+        if primary_region:
+            regions.append(primary_region.upper())
+        for r in ["TW", "HK", "TH", "SG"]:
+            if r not in regions:
+                regions.append(r)
 
-            transcoded = video_data.get("transcoded_video", {})
-            origin = transcoded.get("origin", {})
-            video_url = origin.get("video_url")
+        for region in regions:
+            result = await FastReferencePoller.poll_video_status(
+                session_id, history_id, region
+            )
+            if result and result.get("status") != "processing":
+                return result, region
+            if result:
+                return result, region
 
-            if not video_url:
-                video_url = video_data.get("video_url")
-
-            if not video_url:
-                video_url = video_data.get("play_url")
-
-            return video_url, status
-        except (KeyError, IndexError, TypeError) as e:
-            logger.warning(f"[Poller] extract failed: {e}")
-            return None, None
+        return None, None
 
     @staticmethod
     async def download_video(
-        video_url: str, dest_name: Optional[str] = None
+        video_url: str, job_id: int
     ) -> Optional[str]:
-        out_dir = BASE_DIR / "data" / "outputs" / "fast_reference"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        if not dest_name:
-            dest_name = f"fast_{int(time.time())}_{random.randint(1000,9999)}.mp4"
-
-        dest_path = out_dir / dest_name
+        output_dir = Path(settings.data_dir) / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"job_{job_id}_0.mp4"
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.get(video_url)
                 resp.raise_for_status()
-                dest_path.write_bytes(resp.content)
-            logger.info(f"[Poller] video downloaded: {dest_path}")
-            return str(dest_path.relative_to(BASE_DIR)).replace("\\", "/")
-        except Exception as e:
-            logger.error(f"[Poller] download failed: {e}")
+                output_path.write_bytes(resp.content)
+                logger.info("Video downloaded: %s", output_path)
+
+            try:
+                import imageio.v3 as iio
+                from PIL import Image
+
+                frames = iio.imread(str(output_path), plugin="pyav")
+                if len(frames) > 0:
+                    thumb = Image.fromarray(frames[0])
+                    thumb.thumbnail((320, 320))
+                    thumb_path = output_dir / f"job_{job_id}_thumb.jpg"
+                    thumb.save(str(thumb_path), "JPEG", quality=80)
+            except Exception as exc:
+                logger.warning("Thumbnail extraction failed: %s", exc)
+
+            return str(output_path)
+        except Exception as exc:
+            logger.error("Video download failed: %s", exc)
             return None

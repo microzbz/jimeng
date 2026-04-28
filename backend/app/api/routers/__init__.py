@@ -11,5 +11,4 @@ __all__ = [
     "settings",
     "websocket",
     "content_generation",
-    "fast_reference",
 ]

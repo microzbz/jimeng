@@ -191,7 +191,7 @@ async def ensure_content_generation_jobs_table():
 
 
 async def ensure_fast_reference_tables():
-    """Create reference_assets and content_job_references tables if not exist."""
+    """Ensure reference_assets and content_job_references tables exist."""
     async with async_session_factory() as session:
         await session.execute(
             text(
@@ -204,11 +204,11 @@ async def ensure_fast_reference_tables():
                     file_path VARCHAR(512) NOT NULL,
                     file_url VARCHAR(1024),
                     thumbnail_path VARCHAR(512),
-                    file_size INTEGER DEFAULT 0,
+                    file_size INTEGER,
                     sha256 VARCHAR(64),
                     mime_type VARCHAR(100),
                     description TEXT,
-                    tags VARCHAR(512),
+                    tags TEXT,
                     usage_count INTEGER DEFAULT 0,
                     created_at DATETIME,
                     updated_at DATETIME
@@ -224,26 +224,29 @@ async def ensure_fast_reference_tables():
                     job_id INTEGER NOT NULL,
                     asset_id INTEGER NOT NULL,
                     position INTEGER DEFAULT 0,
-                    FOREIGN KEY(job_id) REFERENCES content_generation_jobs(id) ON DELETE CASCADE,
-                    FOREIGN KEY(asset_id) REFERENCES reference_assets(id) ON DELETE RESTRICT,
+                    FOREIGN KEY(job_id) REFERENCES content_generation_jobs(id),
+                    FOREIGN KEY(asset_id) REFERENCES reference_assets(id),
                     UNIQUE(job_id, position)
                 )
                 """
             )
         )
-        for idx_sql in [
-            "CREATE INDEX IF NOT EXISTS ix_reference_assets_name ON reference_assets(name)",
-            "CREATE INDEX IF NOT EXISTS ix_reference_assets_asset_type ON reference_assets(asset_type)",
-            "CREATE INDEX IF NOT EXISTS ix_content_job_references_job_id ON content_job_references(job_id)",
-            "CREATE INDEX IF NOT EXISTS ix_content_job_references_asset_id ON content_job_references(asset_id)",
-        ]:
-            await session.execute(text(idx_sql))
+        await session.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_reference_assets_name ON reference_assets(name)"
+            )
+        )
+        await session.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_content_job_references_job_id ON content_job_references(job_id)"
+            )
+        )
         await session.commit()
         logger.info("Ensured fast_reference tables exist")
 
 
 async def ensure_fast_reference_fields():
-    """Add fast_reference columns to content_generation_jobs."""
+    """Ensure content_generation_jobs has fast_reference columns."""
     columns = [
         ("retry_count", "INTEGER DEFAULT 0"),
         ("max_retry", "INTEGER DEFAULT 10"),
@@ -279,7 +282,7 @@ async def ensure_fast_reference_fields():
 
 
 async def ensure_accounts_fast_enabled():
-    """Add fast_enabled column to accounts table."""
+    """Ensure accounts has fast_enabled column."""
     async with async_session_factory() as session:
         result = await session.execute(text("PRAGMA table_info(accounts)"))
         existing_cols = {row[1] for row in result.fetchall()}
@@ -294,5 +297,25 @@ async def ensure_accounts_fast_enabled():
                 logger.info("Added column accounts.fast_enabled")
             except Exception as exc:
                 logger.error(f"Failed to add accounts.fast_enabled: {exc}")
+
+        await session.commit()
+
+
+async def ensure_accounts_lock_job_id():
+    """Ensure accounts has gen_lock_job_id column."""
+    async with async_session_factory() as session:
+        result = await session.execute(text("PRAGMA table_info(accounts)"))
+        existing_cols = {row[1] for row in result.fetchall()}
+
+        if "gen_lock_job_id" not in existing_cols:
+            try:
+                await session.execute(
+                    text(
+                        "ALTER TABLE accounts ADD COLUMN gen_lock_job_id INTEGER"
+                    )
+                )
+                logger.info("Added column accounts.gen_lock_job_id")
+            except Exception as exc:
+                logger.error(f"Failed to add accounts.gen_lock_job_id: {exc}")
 
         await session.commit()

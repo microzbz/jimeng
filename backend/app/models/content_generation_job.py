@@ -48,10 +48,10 @@ class ContentGenerationJob(Base):
     submitted_at = Column(DateTime, comment="提交到远端时间")
     finished_at = Column(DateTime, comment="远端完成时间")
 
-    # fast_reference 专用字段
+    # Fast Reference 专用字段
     retry_count = Column(Integer, default=0, comment="重试次数")
     max_retry = Column(Integer, default=10, comment="最大重试次数")
-    video_url = Column(String(1024), comment="视频直链")
+    video_url = Column(String(1024), comment="视频下载URL")
     browser_session_log = Column(Text, comment="浏览器会话日志")
     polling_region = Column(String(20), comment="轮询区域")
     browser_started_at = Column(DateTime, comment="浏览器启动时间")

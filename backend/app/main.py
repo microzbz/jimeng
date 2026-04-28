@@ -26,7 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pathlib import Path
 
-from app.core import settings, ensure_directories, init_db, BASE_DIR
+from app.core import settings, ensure_directories, init_db
 from app.middleware.error_handler import global_exception_handler
 import app.models  # 确保模型被加载
 from app.services.register_engine import register_engine
@@ -41,9 +41,12 @@ from app.services.db_migration import (
     ensure_fast_reference_tables,
     ensure_fast_reference_fields,
     ensure_accounts_fast_enabled,
+    ensure_accounts_lock_job_id,
 )
 import logging
 from logging.handlers import TimedRotatingFileHandler
+
+fast_reference_service = None
 
 # 配置日志
 logging.basicConfig(
@@ -91,10 +94,11 @@ async def lifespan(app: FastAPI):
     await ensure_accounts_generation_columns()
     await ensure_content_generation_jobs_table()
 
-    # 轻量迁移：快速参考视频生成相关表和字段
+    # 轻量迁移：Fast Reference 相关表和字段
     await ensure_fast_reference_tables()
     await ensure_fast_reference_fields()
     await ensure_accounts_fast_enabled()
+    await ensure_accounts_lock_job_id()
 
     # 初始化 WebSocket 日志转发
     from app.api.routers.websocket import WebSocketLogHandler
@@ -274,6 +278,13 @@ async def lifespan(app: FastAPI):
 
     await content_generation_service.start()
 
+    # 启动快速参考视频生成服务
+    from app.services.fast_reference_service import FastReferenceService
+
+    global fast_reference_service
+    fast_reference_service = FastReferenceService()
+    await fast_reference_service.start()
+
     # 恢复重启前未完成的任务
     try:
         from sqlalchemy import select
@@ -306,6 +317,8 @@ async def lifespan(app: FastAPI):
     from app.services.content_generation import content_generation_service
 
     await content_generation_service.stop()
+    if fast_reference_service:
+        await fast_reference_service.stop()
     await register_engine.shutdown()
     await clash_manager.close()
     await cf_kv_client.close()
@@ -381,7 +394,7 @@ app.include_router(
     outlook_mailboxes.router, prefix="/api/outlook-mailboxes", tags=["Outlook 邮箱"]
 )
 app.include_router(content_generation.router, prefix="/api/content", tags=["内容生成"])
-app.include_router(fast_reference.router, prefix="/api/fast-reference", tags=["快速参考视频"])
+app.include_router(fast_reference.router, tags=["快速参考"])
 
 
 # HEALTH CHECK REMOVED - SERVED BY SPA
@@ -412,12 +425,6 @@ assets_path = frontend_dist / "assets"
 if assets_path.exists():
     app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
     logger.info(f"已挂载前端静态资源: {assets_path}")
-
-# 挂载快速参考素材目录
-fast_assets_dir = BASE_DIR / settings.fast_assets_dir
-fast_assets_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/fast-assets", StaticFiles(directory=str(fast_assets_dir.absolute())), name="fast-assets")
-logger.info(f"已挂载快速参考素材: {fast_assets_dir}")
 
 
 # 2. 挂载入口 HTML 并支持 SPA 路由

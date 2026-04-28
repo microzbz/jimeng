@@ -145,6 +145,8 @@ export const accountsApi = {
         query.set('is_enabled', String(params.is_enabled))
         return api.post<{ message: string; updated: number }>(`/content/accounts/batch-toggle?${query}`)
     },
+    toggleFastReference: (id: number, isEnabled: boolean) =>
+        api.post<{ message: string }>(`/fast-reference/accounts/${id}/toggle?is_enabled=${isEnabled}`),
     manualCreate: (data: { email: string; region: string; session_id: string }) =>
         api.post<Account>('/accounts/manual', data),
     manualImport: (data: { mode: 'csv' | 'txt'; content: string }) =>
@@ -173,6 +175,60 @@ export const contentApi = {
     deleteJob: (id: number) => api.delete<{ message: string }>(`/content/jobs/${id}`),
     batchDeleteJobs: (ids: number[]) => api.post<{ message: string, deleted: number }>('/content/jobs/batch-delete', ids),
     retryJob: (id: number) => api.post<ContentGenerationJob>(`/content/jobs/${id}/retry`),
+}
+
+// ============ Fast Reference API ============
+async function uploadFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+    const response = await fetch(`${BASE_URL}${endpoint}`, {
+        method: 'POST',
+        body: formData,
+    })
+    if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
+        throw new Error(error.detail || `HTTP ${response.status}`)
+    }
+    return response.json()
+}
+
+export const fastReferenceApi = {
+    createJob: (data: FastReferenceJobRequest) =>
+        api.post<FastReferenceJob>('/fast-reference/jobs', data),
+    listJobs: (params?: { status?: string; page?: number; page_size?: number }) => {
+        const query = new URLSearchParams()
+        if (params?.status) query.set('status', params.status)
+        if (params?.page) query.set('page', String(params.page))
+        if (params?.page_size) query.set('page_size', String(params.page_size))
+        return api.get<{ items: FastReferenceJob[]; total: number }>(`/fast-reference/jobs?${query}`)
+    },
+    getJob: (id: number) => api.get<FastReferenceJob>(`/fast-reference/jobs/${id}`),
+    retryJob: (id: number) => api.post<{ id: number; status: string }>(`/fast-reference/jobs/${id}/retry`),
+    deleteJob: (id: number) => api.delete<{ message: string }>(`/fast-reference/jobs/${id}`),
+    listAssets: (params?: { search?: string; page?: number; page_size?: number }) => {
+        const query = new URLSearchParams()
+        if (params?.search) query.set('search', params.search)
+        if (params?.page) query.set('page', String(params.page))
+        if (params?.page_size) query.set('page_size', String(params.page_size))
+        return api.get<{ items: ReferenceAsset[]; total: number }>(`/fast-reference/assets?${query}`)
+    },
+    uploadAsset: (formData: FormData) =>
+        uploadFormData<ReferenceAsset>('/fast-reference/assets', formData),
+    updateAsset: (id: number, formData: FormData) => {
+        return fetch(`${BASE_URL}/fast-reference/assets/${id}`, {
+            method: 'PUT',
+            body: formData,
+        }).then(async (r) => {
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({ detail: 'Unknown error' }))
+                throw new Error(err.detail || `HTTP ${r.status}`)
+            }
+            return r.json() as Promise<ReferenceAsset>
+        })
+    },
+    deleteAsset: (id: number) => api.delete<{ message: string }>(`/fast-reference/assets/${id}`),
+    resolveMentions: (prompt: string) =>
+        api.post<{ matches: { name: string; asset_id: number; file_path: string }[]; missing: string[] }>(
+            '/fast-reference/assets/resolve', { prompt }
+        ),
 }
 
 // ============ Proxies API ============
@@ -279,7 +335,10 @@ export interface Account {
     gen_last_used_at?: string
     gen_locked_until?: string
     gen_auto_disabled_reason?: string
+
+    // Fast Reference 池
     fast_enabled?: boolean
+    gen_lock_job_id?: number
 }
 
 export interface ContentGenerationRequest {
@@ -321,12 +380,6 @@ export interface ContentGenerationJob {
     finished_at?: string
     created_at?: string
     updated_at?: string
-    retry_count?: number
-    max_retry?: number
-    video_url?: string
-    polling_region?: string
-    browser_started_at?: string
-    browser_finished_at?: string
 }
 
 export interface ContentGenerationModels {
@@ -437,23 +490,6 @@ export interface OutlookMailboxListResponse {
 }
 
 // ============ Fast Reference Types ============
-export interface ReferenceAsset {
-    id: number
-    name: string
-    alias?: string
-    asset_type: string
-    file_path: string
-    file_url?: string
-    thumbnail_path?: string
-    file_size: number
-    mime_type?: string
-    description?: string
-    tags?: string
-    usage_count: number
-    created_at?: string
-    updated_at?: string
-}
-
 export interface FastReferenceJobRequest {
     prompt: string
     model?: string
@@ -462,51 +498,37 @@ export interface FastReferenceJobRequest {
     ratio?: string
 }
 
-export interface MentionResolveResponse {
-    mentions: Array<{ name: string; asset_id: number; file_path: string }>
-    missing: string[]
+export interface FastReferenceJob {
+    id: number
+    prompt: string
+    model: string
+    status: 'queued' | 'submitting' | 'submitted' | 'processing' | 'success' | 'failed'
+    function_mode: string
+    account_id?: number
+    remote_task_id?: string
+    error_message?: string
+    local_urls?: string[]
+    video_url?: string
+    retry_count: number
+    created_at?: string
+    submitted_at?: string
+    finished_at?: string
 }
 
-// ============ Fast Reference API ============
-export const fastReferenceApi = {
-    createJob: (data: FastReferenceJobRequest) =>
-        api.post<ContentGenerationJob>('/fast-reference/jobs', data),
-    listJobs: (params?: { status?: string; page?: number; page_size?: number }) => {
-        const query = new URLSearchParams()
-        if (params?.status) query.set('status', params.status)
-        if (params?.page) query.set('page', String(params.page))
-        if (params?.page_size) query.set('page_size', String(params.page_size))
-        return api.get<ContentGenerationJob[]>(`/fast-reference/jobs?${query}`)
-    },
-    getJob: (id: number) => api.get<ContentGenerationJob>(`/fast-reference/jobs/${id}`),
-    retryJob: (id: number) => api.post<ContentGenerationJob>(`/fast-reference/jobs/${id}/retry`),
-    deleteJob: (id: number) => api.delete<{ message: string }>(`/fast-reference/jobs/${id}`),
-    listAssets: (params?: { search?: string; asset_type?: string }) => {
-        const query = new URLSearchParams()
-        if (params?.search) query.set('search', params.search)
-        if (params?.asset_type) query.set('asset_type', params.asset_type)
-        return api.get<ReferenceAsset[]>(`/fast-reference/assets?${query}`)
-    },
-    uploadAsset: (formData: FormData) =>
-        fetch('/api/fast-reference/assets', { method: 'POST', body: formData }).then(r => {
-            if (!r.ok) throw new Error(`Upload failed: ${r.status}`)
-            return r.json() as Promise<ReferenceAsset>
-        }),
-    updateAsset: (id: number, formData: FormData) =>
-        fetch(`/api/fast-reference/assets/${id}`, { method: 'PUT', body: formData }).then(r => {
-            if (!r.ok) throw new Error(`Update failed: ${r.status}`)
-            return r.json() as Promise<ReferenceAsset>
-        }),
-    deleteAsset: (id: number) => api.delete<{ message: string }>(`/fast-reference/assets/${id}`),
-    resolveMentions: (prompt: string) =>
-        api.post<MentionResolveResponse>('/fast-reference/assets/resolve', { prompt }),
-    toggleAccount: (id: number, isEnabled: boolean) =>
-        api.post<{ message: string }>(`/fast-reference/accounts/${id}/toggle?is_enabled=${isEnabled}`),
-    batchToggleAccounts: (isEnabled: boolean, params?: { status?: string; health_status?: string; region?: string }) => {
-        const query = new URLSearchParams({ is_enabled: String(isEnabled) })
-        if (params?.status) query.set('status', params.status)
-        if (params?.health_status) query.set('health_status', params.health_status)
-        if (params?.region) query.set('region', params.region)
-        return api.post<{ message: string }>(`/fast-reference/accounts/batch-toggle?${query}`)
-    },
+export interface ReferenceAsset {
+    id: number
+    name: string
+    alias?: string
+    asset_type?: string
+    file_path: string
+    file_url?: string
+    thumbnail_path?: string
+    file_size?: number
+    sha256?: string
+    mime_type?: string
+    description?: string
+    tags?: string
+    usage_count: number
+    created_at: string
+    updated_at?: string
 }

@@ -1,351 +1,463 @@
-import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
-import { VirtuosoGrid } from 'react-virtuoso'
-import { Zap, Send, Trash2, RotateCcw, Upload, Image, X, Clock, MonitorPlay, Scaling, FolderOpen } from 'lucide-react'
-import { fastReferenceApi, ContentGenerationJob, ReferenceAsset, FastReferenceJobRequest } from '@/services/api'
+import { useEffect, useState, useRef } from 'react'
+import {
+    Video, Send, Trash2, RotateCcw, Upload, X, Plus,
+    Loader2, AlertCircle, Package
+} from 'lucide-react'
+import { toast } from 'sonner'
+import {
+    fastReferenceApi, FastReferenceJob, ReferenceAsset, FastReferenceJobRequest
+} from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+} from '@/components/ui/select'
+import { cn } from '@/lib/utils'
 import { useLanguage } from '@/contexts/LanguageContext'
 import MentionInput from '@/components/MentionInput'
-import { toast } from 'sonner'
 
-let cachedJobs: ContentGenerationJob[] = []
+const POLL_INTERVAL_MS = 4000
+let cachedJobs: FastReferenceJob[] = []
 let cachedAssets: ReferenceAsset[] = []
 
 export default function FastReference() {
     const { t } = useLanguage()
-    const [jobs, setJobs] = useState<ContentGenerationJob[]>(cachedJobs)
-    const [assets, setAssets] = useState<ReferenceAsset[]>(cachedAssets)
+    const [jobs, setJobs] = useState<FastReferenceJob[]>(() => cachedJobs)
+    const [assets, setAssets] = useState<ReferenceAsset[]>(() => cachedAssets)
     const [prompt, setPrompt] = useState('')
-    const [model] = useState('Dreamina Seedance 2.0 Fast')
+    const [model, setModel] = useState('Seedance 2.0 Fast')
     const [duration, setDuration] = useState(5)
     const [resolution, setResolution] = useState('720p')
     const [ratio, setRatio] = useState('16:9')
-    const [filterStatus, setFilterStatus] = useState<string>('all')
-    const [previewJob, setPreviewJob] = useState<ContentGenerationJob | null>(null)
+    const [submitting, setSubmitting] = useState(false)
     const [isHovered, setIsHovered] = useState(false)
-    const [assetSheetOpen, setAssetSheetOpen] = useState(false)
-    const pollRef = useRef<ReturnType<typeof setInterval>>()
 
-    const fetchJobs = useCallback(async () => {
+    const [assetDialogOpen, setAssetDialogOpen] = useState(false)
+    const [uploadName, setUploadName] = useState('')
+    const [uploadAlias, setUploadAlias] = useState('')
+    const [uploadFile, setUploadFile] = useState<File | null>(null)
+
+    const [previewJob, setPreviewJob] = useState<FastReferenceJob | null>(null)
+
+    const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    const fetchingJobsRef = useRef(false)
+
+    const fetchJobs = async () => {
+        if (fetchingJobsRef.current) return
+        fetchingJobsRef.current = true
         try {
             const data = await fastReferenceApi.listJobs({ page_size: 100 })
-            setJobs(data)
-            cachedJobs = data
-        } catch {}
-    }, [])
+            cachedJobs = data.items
+            setJobs(data.items)
+        } catch (e) {
+            console.error('Failed to fetch jobs', e)
+        } finally {
+            fetchingJobsRef.current = false
+        }
+    }
 
-    const fetchAssets = useCallback(async () => {
+    const fetchAssets = async () => {
         try {
-            const data = await fastReferenceApi.listAssets()
-            setAssets(data)
-            cachedAssets = data
-        } catch {}
-    }, [])
+            const data = await fastReferenceApi.listAssets({ page_size: 200 })
+            cachedAssets = data.items
+            setAssets(data.items)
+        } catch (e) {
+            console.error('Failed to fetch assets', e)
+        }
+    }
 
     useEffect(() => {
         fetchJobs()
         fetchAssets()
-        pollRef.current = setInterval(fetchJobs, 4000)
-        const onVis = () => {
+        pollRef.current = setInterval(fetchJobs, POLL_INTERVAL_MS)
+
+        const handleVisibility = () => {
             if (document.hidden) {
-                clearInterval(pollRef.current)
+                if (pollRef.current) clearInterval(pollRef.current)
             } else {
                 fetchJobs()
-                pollRef.current = setInterval(fetchJobs, 4000)
+                pollRef.current = setInterval(fetchJobs, POLL_INTERVAL_MS)
             }
         }
-        document.addEventListener('visibilitychange', onVis)
+        document.addEventListener('visibilitychange', handleVisibility)
         return () => {
-            clearInterval(pollRef.current)
-            document.removeEventListener('visibilitychange', onVis)
+            if (pollRef.current) clearInterval(pollRef.current)
+            document.removeEventListener('visibilitychange', handleVisibility)
         }
-    }, [fetchJobs, fetchAssets])
-
-    const filteredJobs = useMemo(() => {
-        if (filterStatus === 'all') return jobs
-        return jobs.filter(j => j.status === filterStatus)
-    }, [jobs, filterStatus])
+    }, [])
 
     const handleGenerate = async () => {
         if (!prompt.trim()) return
+        setSubmitting(true)
         try {
-            const payload: FastReferenceJobRequest = { prompt, model, duration, resolution, ratio }
-            await fastReferenceApi.createJob(payload)
+            const req: FastReferenceJobRequest = {
+                prompt: prompt.trim(),
+                model,
+                duration,
+                resolution,
+                ratio,
+            }
+            await fastReferenceApi.createJob(req)
+            toast.success('Job created')
             setPrompt('')
             fetchJobs()
-            toast.success(t('fast_ref.job_created'))
-        } catch (e: any) {
-            toast.error(e.message)
+        } catch (error: any) {
+            toast.error(error.message || 'Failed to create job')
+        } finally {
+            setSubmitting(false)
         }
     }
 
-    const handleRetry = async (job: ContentGenerationJob) => {
+    const handleRetry = async (id: number) => {
         try {
-            await fastReferenceApi.retryJob(job.id)
+            await fastReferenceApi.retryJob(id)
+            toast.success('Job re-queued')
             fetchJobs()
-        } catch (e: any) {
-            toast.error(e.message)
+        } catch (error: any) {
+            toast.error(error.message || 'Retry failed')
         }
     }
 
-    const handleDelete = async (job: ContentGenerationJob) => {
+    const handleDelete = async (id: number) => {
         try {
-            await fastReferenceApi.deleteJob(job.id)
+            await fastReferenceApi.deleteJob(id)
+            toast.success('Job deleted')
             fetchJobs()
-        } catch (e: any) {
-            toast.error(e.message)
+        } catch (error: any) {
+            toast.error(error.message || 'Delete failed')
         }
     }
 
-    const handleUploadAsset = async (files: FileList) => {
-        for (const file of Array.from(files)) {
-            const fd = new FormData()
-            fd.append('file', file)
-            fd.append('name', file.name.replace(/\.[^.]+$/, ''))
-            fd.append('asset_type', file.type.startsWith('video') ? 'video' : 'image')
-            try {
-                await fastReferenceApi.uploadAsset(fd)
-                toast.success(`${file.name} uploaded`)
-            } catch (e: any) {
-                toast.error(e.message)
-            }
+    const handleUploadAsset = async () => {
+        if (!uploadFile) return
+        const formData = new FormData()
+        formData.append('file', uploadFile)
+        if (uploadName) formData.append('name', uploadName)
+        if (uploadAlias) formData.append('alias', uploadAlias)
+        try {
+            await fastReferenceApi.uploadAsset(formData)
+            toast.success('Asset uploaded')
+            setUploadFile(null)
+            setUploadName('')
+            setUploadAlias('')
+            fetchAssets()
+        } catch (error: any) {
+            toast.error(error.message || 'Upload failed')
         }
-        fetchAssets()
     }
 
     const handleDeleteAsset = async (id: number) => {
         try {
             await fastReferenceApi.deleteAsset(id)
+            toast.success('Asset deleted')
             fetchAssets()
-        } catch (e: any) {
-            toast.error(e.message)
+        } catch (error: any) {
+            toast.error(error.message || 'Delete failed')
         }
+    }
+
+    const getStatusBadge = (status: string) => {
+        const map: Record<string, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
+            queued: { variant: 'secondary', label: t('fast_ref.status.queued') },
+            submitting: { variant: 'outline', label: t('fast_ref.status.submitting') },
+            submitted: { variant: 'outline', label: t('fast_ref.status.submitted') },
+            processing: { variant: 'default', label: t('fast_ref.status.processing') },
+            success: { variant: 'default', label: t('fast_ref.status.success') },
+            failed: { variant: 'destructive', label: t('fast_ref.status.failed') },
+        }
+        const info = map[status] || { variant: 'secondary' as const, label: status }
+        return <Badge variant={info.variant}>{info.label}</Badge>
     }
 
     const panelExpanded = isHovered || prompt.length > 0
 
-    const statusColor = (s: string) => {
-        switch (s) {
-            case 'success': return 'bg-emerald-500/20 text-emerald-400'
-            case 'failed': return 'bg-red-500/20 text-red-400'
-            case 'processing': case 'submitted': return 'bg-blue-500/20 text-blue-400'
-            case 'queued': case 'submitting': return 'bg-yellow-500/20 text-yellow-400'
-            case 'cancelled': return 'bg-zinc-500/20 text-zinc-400'
-            default: return 'bg-zinc-500/20 text-zinc-400'
-        }
-    }
-
     return (
-        <div className="h-full flex flex-col relative">
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
-                <div className="flex items-center gap-3">
-                    <Zap className="w-5 h-5 text-amber-400" />
-                    <h1 className="text-lg font-semibold text-white">{t('fast_ref.title')}</h1>
-                    <Badge variant="outline" className="text-xs">{filteredJobs.length} {t('fast_ref.jobs')}</Badge>
-                </div>
-                <div className="flex items-center gap-2">
-                    <Select value={filterStatus} onValueChange={setFilterStatus}>
-                        <SelectTrigger className="w-32 h-8 text-xs bg-white/5 border-white/10">
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="all">{t('common.all')}</SelectItem>
-                            <SelectItem value="queued">Queued</SelectItem>
-                            <SelectItem value="processing">Processing</SelectItem>
-                            <SelectItem value="success">Success</SelectItem>
-                            <SelectItem value="failed">Failed</SelectItem>
-                        </SelectContent>
-                    </Select>
-                    <Dialog open={assetSheetOpen} onOpenChange={setAssetSheetOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="outline" size="sm" className="gap-1.5">
-                                <FolderOpen className="w-4 h-4" />
-                                {t('fast_ref.asset_library')}
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-md bg-zinc-950 border-white/10">
-                            <DialogTitle className="text-white">{t('fast_ref.asset_library')}</DialogTitle>
-                            <div className="mt-4 space-y-3">
-                                <label className="flex items-center justify-center w-full h-24 border-2 border-dashed border-white/10 rounded-lg cursor-pointer hover:border-white/20 transition-colors">
-                                    <input type="file" className="hidden" multiple accept="image/*,video/*"
-                                        onChange={e => e.target.files && handleUploadAsset(e.target.files)} />
-                                    <div className="text-center text-zinc-400 text-sm">
-                                        <Upload className="w-5 h-5 mx-auto mb-1" />
-                                        {t('fast_ref.drop_upload')}
-                                    </div>
-                                </label>
-                                <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-                                    {assets.map(asset => (
-                                        <div key={asset.id} className="flex items-center gap-3 p-2 rounded-lg bg-white/5 group">
-                                            {asset.thumbnail_path ? (
-                                                <img src={`/${asset.thumbnail_path}`} className="w-10 h-10 rounded object-cover" alt="" />
-                                            ) : (
-                                                <div className="w-10 h-10 rounded bg-zinc-800 flex items-center justify-center">
-                                                    <Image className="w-4 h-4 text-zinc-500" />
-                                                </div>
-                                            )}
-                                            <div className="flex-1 min-w-0">
-                                                <div className="text-sm text-white truncate">{asset.name}</div>
-                                                <div className="text-xs text-zinc-500">{asset.asset_type} · {(asset.file_size / 1024).toFixed(0)}KB</div>
-                                            </div>
-                                            <button onClick={() => handleDeleteAsset(asset.id)}
-                                                className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-red-400 transition-all">
-                                                <X className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {assets.length === 0 && (
-                                        <div className="text-center text-zinc-500 text-sm py-8">{t('fast_ref.no_assets')}</div>
-                                    )}
-                                </div>
-                            </div>
-                        </DialogContent>
-                    </Dialog>
+        <div className="flex flex-col h-full relative">
+            <div className="p-6 pb-2">
+                <div className="flex items-center justify-between mb-4">
+                    <div>
+                        <h1 className="text-2xl font-bold">{t('fast_ref.title')}</h1>
+                        <p className="text-sm text-muted-foreground">{t('fast_ref.subtitle')}</p>
+                    </div>
+                    <Button variant="outline" onClick={() => setAssetDialogOpen(true)}>
+                        <Package className="mr-2 h-4 w-4" />
+                        {t('fast_ref.assets')} ({assets.length})
+                    </Button>
                 </div>
             </div>
 
-            {/* Job Grid */}
-            <div className="flex-1 overflow-hidden px-6 pt-4 pb-40">
-                {filteredJobs.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center h-full text-zinc-500">
-                        <Zap className="w-12 h-12 mb-3 opacity-30" />
-                        <p className="text-sm">{t('fast_ref.empty')}</p>
+            {/* Job grid */}
+            <div className="flex-1 overflow-auto px-6 pb-48">
+                {jobs.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-muted-foreground">
+                        <Video className="h-12 w-12 mb-4 opacity-30" />
+                        <p>{t('fast_ref.no_jobs')}</p>
                     </div>
                 ) : (
-                    <VirtuosoGrid
-                        totalCount={filteredJobs.length}
-                        overscan={200}
-                        listClassName="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3"
-                        itemContent={index => {
-                            const job = filteredJobs[index]
-                            return (
-                                <Card key={job.id} className="bg-white/[0.03] border-white/5 overflow-hidden group cursor-pointer hover:border-white/10 transition-all"
-                                    onClick={() => job.status === 'success' && setPreviewJob(job)}>
-                                    <div className="aspect-video relative bg-zinc-900">
-                                        {job.status === 'success' && job.output_urls?.[0] ? (
-                                            <video src={job.output_urls[0]} className="w-full h-full object-cover"
-                                                muted loop onMouseEnter={e => (e.target as HTMLVideoElement).play()}
-                                                onMouseLeave={e => { const v = e.target as HTMLVideoElement; v.pause(); v.currentTime = 0 }} />
-                                        ) : job.status === 'failed' ? (
-                                            <div className="w-full h-full flex items-center justify-center">
-                                                <span className="text-red-400 text-xs text-center px-2">{job.error_message || 'Failed'}</span>
-                                            </div>
-                                        ) : (
-                                            <div className="w-full h-full flex items-center justify-center">
-                                                <div className="w-6 h-6 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
-                                            </div>
-                                        )}
-                                        <Badge className={`absolute top-1.5 left-1.5 text-[10px] ${statusColor(job.status)}`}>
-                                            {job.status}
-                                        </Badge>
-                                        <div className="absolute bottom-0 inset-x-0 p-1.5 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 justify-end">
-                                            {job.status === 'failed' && (
-                                                <button onClick={e => { e.stopPropagation(); handleRetry(job) }}
-                                                    className="p-1 rounded bg-white/10 hover:bg-white/20 text-white">
-                                                    <RotateCcw className="w-3.5 h-3.5" />
-                                                </button>
-                                            )}
-                                            <button onClick={e => { e.stopPropagation(); handleDelete(job) }}
-                                                className="p-1 rounded bg-white/10 hover:bg-red-500/50 text-white">
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <CardContent className="p-2">
-                                        <p className="text-xs text-zinc-400 truncate">{job.prompt}</p>
-                                    </CardContent>
-                                </Card>
-                            )
-                        }}
-                    />
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                        {jobs.map(job => (
+                            <JobCard
+                                key={job.id}
+                                job={job}
+                                onRetry={handleRetry}
+                                onDelete={handleDelete}
+                                onPreview={setPreviewJob}
+                                getStatusBadge={getStatusBadge}
+                            />
+                        ))}
+                    </div>
                 )}
             </div>
 
-            {/* Bottom Input Panel */}
-            <div className={`fixed bottom-0 left-64 right-0 z-40 transition-all duration-300 ${panelExpanded ? 'pb-4' : 'pb-2'}`}
-                onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
-                <div className={`mx-6 rounded-2xl border border-white/10 bg-zinc-950/80 backdrop-blur-xl shadow-2xl transition-all duration-300 ${panelExpanded ? 'p-4' : 'p-3'}`}>
+            {/* Bottom input panel */}
+            <div
+                className={cn(
+                    "fixed bottom-0 left-0 right-0 z-40 transition-all duration-300 ml-64",
+                    "bg-background/60 backdrop-blur-2xl border-t border-white/10 shadow-[0_-4px_20px_rgba(0,0,0,0.3)]",
+                    panelExpanded ? "pb-6 pt-4" : "pb-4 pt-3"
+                )}
+                onMouseEnter={() => setIsHovered(true)}
+                onMouseLeave={() => setIsHovered(false)}
+            >
+                <div className="max-w-4xl mx-auto px-6">
                     <div className="flex items-end gap-3">
-                        <div className="flex-1">
-                            <MentionInput
-                                value={prompt}
-                                onChange={setPrompt}
-                                assets={assets}
-                                placeholder={t('fast_ref.prompt_placeholder')}
-                                className="w-full bg-transparent border-0 text-white placeholder-zinc-500 text-sm resize-none focus:outline-none focus:ring-0"
-                            />
-                        </div>
-                        <Button size="sm" onClick={handleGenerate} disabled={!prompt.trim()}
-                            className="bg-amber-500 hover:bg-amber-600 text-black font-medium gap-1.5 shrink-0">
-                            <Send className="w-4 h-4" />
-                            {t('fast_ref.generate')}
+                        <MentionInput
+                            value={prompt}
+                            onChange={setPrompt}
+                            assets={assets}
+                            placeholder={t('fast_ref.prompt_placeholder')}
+                            className="min-h-[40px]"
+                        />
+                        <Button
+                            size="sm"
+                            onClick={handleGenerate}
+                            disabled={submitting || !prompt.trim()}
+                        >
+                            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                         </Button>
                     </div>
                     {panelExpanded && (
-                        <div className="flex items-center gap-3 mt-3 pt-3 border-t border-white/5">
-                            <div className="flex items-center gap-1.5 text-xs text-zinc-400">
-                                <Clock className="w-3.5 h-3.5" />
-                                <Select value={String(duration)} onValueChange={v => setDuration(Number(v))}>
-                                    <SelectTrigger className="h-7 w-16 text-xs bg-white/5 border-white/10"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="5">5s</SelectItem>
-                                        <SelectItem value="10">10s</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="flex items-center gap-1.5 text-xs text-zinc-400">
-                                <MonitorPlay className="w-3.5 h-3.5" />
-                                <Select value={resolution} onValueChange={setResolution}>
-                                    <SelectTrigger className="h-7 w-20 text-xs bg-white/5 border-white/10"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="720p">720p</SelectItem>
-                                        <SelectItem value="1080p">1080p</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
-                            <div className="flex items-center gap-1.5 text-xs text-zinc-400">
-                                <Scaling className="w-3.5 h-3.5" />
-                                <Select value={ratio} onValueChange={setRatio}>
-                                    <SelectTrigger className="h-7 w-20 text-xs bg-white/5 border-white/10"><SelectValue /></SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="16:9">16:9</SelectItem>
-                                        <SelectItem value="9:16">9:16</SelectItem>
-                                        <SelectItem value="1:1">1:1</SelectItem>
-                                    </SelectContent>
-                                </Select>
-                            </div>
+                        <div className="flex items-center gap-3 mt-3 flex-wrap">
+                            <Select value={model} onValueChange={setModel}>
+                                <SelectTrigger className="w-48 h-8 text-xs">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="Seedance 2.0 Fast">Seedance 2.0 Fast</SelectItem>
+                                    <SelectItem value="Seedance 2.0">Seedance 2.0</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <Select value={String(duration)} onValueChange={v => setDuration(Number(v))}>
+                                <SelectTrigger className="w-20 h-8 text-xs">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {[5, 10].map(d => (
+                                        <SelectItem key={d} value={String(d)}>{d}s</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            <Select value={resolution} onValueChange={setResolution}>
+                                <SelectTrigger className="w-24 h-8 text-xs">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="720p">720p</SelectItem>
+                                    <SelectItem value="1080p">1080p</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <Select value={ratio} onValueChange={setRatio}>
+                                <SelectTrigger className="w-24 h-8 text-xs">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="1:1">1:1</SelectItem>
+                                    <SelectItem value="16:9">16:9</SelectItem>
+                                    <SelectItem value="9:16">9:16</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* Preview Dialog */}
-            {previewJob && (
-                <Dialog open={!!previewJob} onOpenChange={() => setPreviewJob(null)}>
-                    <DialogContent className="max-w-4xl bg-zinc-950 border-white/10">
-                        <DialogTitle className="text-white">{t('fast_ref.preview')}</DialogTitle>
-                        <div className="flex gap-4">
-                            <div className="flex-1">
-                                {previewJob.output_urls?.[0] && (
-                                    <video src={previewJob.output_urls[0]} controls autoPlay className="w-full rounded-lg" />
-                                )}
+            {/* Asset Library Dialog */}
+            <Dialog open={assetDialogOpen} onOpenChange={setAssetDialogOpen}>
+                <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-y-auto">
+                    <DialogHeader>
+                        <DialogTitle>{t('fast_ref.assets')}</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                        <div className="flex items-end gap-2">
+                            <div className="flex-1 space-y-1">
+                                <label className="text-xs text-muted-foreground">{t('fast_ref.asset.name')}</label>
+                                <Input
+                                    value={uploadName}
+                                    onChange={e => setUploadName(e.target.value)}
+                                    placeholder="asset_name"
+                                    className="h-8"
+                                />
                             </div>
-                            <div className="w-64 space-y-3 text-sm">
-                                <div><span className="text-zinc-500">Prompt:</span><p className="text-white mt-1">{previewJob.prompt}</p></div>
-                                <div><span className="text-zinc-500">Model:</span><p className="text-white">{previewJob.model}</p></div>
-                                <div><span className="text-zinc-500">Duration:</span><p className="text-white">{previewJob.duration}s</p></div>
-                                <div><span className="text-zinc-500">Resolution:</span><p className="text-white">{previewJob.resolution}</p></div>
-                                <div><span className="text-zinc-500">Ratio:</span><p className="text-white">{previewJob.ratio}</p></div>
-                                <div><span className="text-zinc-500">Region:</span><p className="text-white">{previewJob.region || '-'}</p></div>
+                            <div className="flex-1 space-y-1">
+                                <label className="text-xs text-muted-foreground">{t('fast_ref.asset.alias')}</label>
+                                <Input
+                                    value={uploadAlias}
+                                    onChange={e => setUploadAlias(e.target.value)}
+                                    placeholder="alias1, alias2"
+                                    className="h-8"
+                                />
+                            </div>
+                            <label className="cursor-pointer">
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="hidden"
+                                    onChange={e => setUploadFile(e.target.files?.[0] || null)}
+                                />
+                                <div className="flex items-center gap-1 px-3 py-1.5 rounded-md border text-xs hover:bg-accent">
+                                    <Upload className="h-3 w-3" />
+                                    {uploadFile ? uploadFile.name.slice(0, 15) : 'Choose'}
+                                </div>
+                            </label>
+                            <Button size="sm" onClick={handleUploadAsset} disabled={!uploadFile}>
+                                <Plus className="h-3 w-3" />
+                            </Button>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            {assets.map(asset => (
+                                <div key={asset.id} className="group relative rounded-lg border p-2">
+                                    {asset.thumbnail_path ? (
+                                        <img src={asset.thumbnail_path} className="w-full h-24 object-cover rounded" alt={asset.name} />
+                                    ) : (
+                                        <div className="w-full h-24 bg-muted rounded flex items-center justify-center text-2xl">
+                                            {asset.name[0]}
+                                        </div>
+                                    )}
+                                    <div className="mt-1">
+                                        <div className="text-xs font-medium truncate">@{asset.name}</div>
+                                        {asset.alias && <div className="text-xs text-muted-foreground truncate">{asset.alias}</div>}
+                                    </div>
+                                    <button
+                                        className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 p-1 rounded bg-destructive/80 text-white"
+                                        onClick={() => handleDeleteAsset(asset.id)}
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                        {assets.length === 0 && (
+                            <p className="text-center text-sm text-muted-foreground py-8">No assets yet. Upload your first reference image.</p>
+                        )}
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Preview Dialog */}
+            <Dialog open={!!previewJob} onOpenChange={() => setPreviewJob(null)}>
+                <DialogContent className="sm:max-w-[800px]">
+                    <DialogHeader>
+                        <DialogTitle>Job #{previewJob?.id}</DialogTitle>
+                    </DialogHeader>
+                    {previewJob && (
+                        <div className="space-y-4">
+                            {previewJob.video_url || (previewJob.local_urls && previewJob.local_urls.length > 0) ? (
+                                <video
+                                    src={previewJob.local_urls?.[0] ? `/outputs/${previewJob.local_urls[0].split('/').pop()}` : previewJob.video_url}
+                                    controls
+                                    autoPlay
+                                    className="w-full rounded-lg"
+                                />
+                            ) : (
+                                <div className="h-64 bg-muted rounded-lg flex items-center justify-center">
+                                    <p className="text-muted-foreground">{previewJob.status === 'failed' ? previewJob.error_message : 'Processing...'}</p>
+                                </div>
+                            )}
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                                <div><span className="text-muted-foreground">Prompt:</span> {previewJob.prompt}</div>
+                                <div><span className="text-muted-foreground">Model:</span> {previewJob.model}</div>
+                                <div><span className="text-muted-foreground">Status:</span> {previewJob.status}</div>
+                                <div><span className="text-muted-foreground">Retries:</span> {previewJob.retry_count}</div>
                             </div>
                         </div>
-                    </DialogContent>
-                </Dialog>
-            )}
+                    )}
+                </DialogContent>
+            </Dialog>
         </div>
+    )
+}
+
+function JobCard({
+    job,
+    onRetry,
+    onDelete,
+    onPreview,
+    getStatusBadge,
+}: {
+    job: FastReferenceJob
+    onRetry: (id: number) => void
+    onDelete: (id: number) => void
+    onPreview: (job: FastReferenceJob) => void
+    getStatusBadge: (status: string) => React.ReactNode
+}) {
+    const isActive = ['queued', 'submitting', 'submitted', 'processing'].includes(job.status)
+    const hasVideo = (job.local_urls && job.local_urls.length > 0) || job.video_url
+
+    return (
+        <Card
+            className={cn(
+                "group relative overflow-hidden cursor-pointer transition-shadow hover:shadow-lg",
+                isActive && "ring-1 ring-primary/20"
+            )}
+            onClick={() => onPreview(job)}
+        >
+            <CardContent className="p-0">
+                <div className="relative aspect-video bg-muted">
+                    {hasVideo ? (
+                        <video
+                            src={job.local_urls?.[0] ? `/outputs/${job.local_urls[0].split('/').pop()}` : job.video_url}
+                            className="w-full h-full object-cover"
+                            muted
+                            onMouseEnter={e => (e.target as HTMLVideoElement).play().catch(() => {})}
+                            onMouseLeave={e => { const v = e.target as HTMLVideoElement; v.pause(); v.currentTime = 0 }}
+                        />
+                    ) : isActive ? (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                            <Loader2 className="h-8 w-8 animate-spin text-primary/50" />
+                            <span className="text-xs text-muted-foreground">{job.status}</span>
+                        </div>
+                    ) : job.status === 'failed' ? (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                            <AlertCircle className="h-8 w-8 text-destructive/50" />
+                            <span className="text-xs text-destructive truncate max-w-[80%]">{job.error_message || 'Failed'}</span>
+                        </div>
+                    ) : null}
+                </div>
+                <div className="p-3">
+                    <p className="text-xs truncate mb-1">{job.prompt}</p>
+                    <div className="flex items-center justify-between">
+                        {getStatusBadge(job.status)}
+                        <span className="text-xs text-muted-foreground">
+                            {job.created_at ? new Date(job.created_at).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}
+                        </span>
+                    </div>
+                </div>
+                <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                    {job.status === 'failed' && (
+                        <button className="p-1.5 rounded-full bg-background/80 hover:bg-background" onClick={() => onRetry(job.id)}>
+                            <RotateCcw className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                    {!isActive && (
+                        <button className="p-1.5 rounded-full bg-destructive/80 hover:bg-destructive text-white" onClick={() => onDelete(job.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                </div>
+            </CardContent>
+        </Card>
     )
 }

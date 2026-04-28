@@ -77,11 +77,14 @@ class Account(Base):
 
     # 内容生成池
     gen_enabled = Column(Boolean, default=False, comment="内容生成池启用状态")
-    fast_enabled = Column(Boolean, default=False, comment="快速参考生成池启用状态")
     gen_enabled_at = Column(DateTime, comment="内容生成池启用时间")
     gen_last_used_at = Column(DateTime, comment="内容生成池最近使用时间")
     gen_locked_until = Column(DateTime, comment="内容生成池锁定截止时间")
     gen_auto_disabled_reason = Column(String(255), comment="内容生成池自动停用原因")
+    gen_lock_job_id = Column(Integer, nullable=True, comment="当前持锁任务ID")
+
+    # Fast Reference 池
+    fast_enabled = Column(Boolean, default=False, comment="快速参考生成池启用状态")
 
     # 任务关联
     task_id = Column(

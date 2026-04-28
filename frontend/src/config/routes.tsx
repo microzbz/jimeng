@@ -8,7 +8,7 @@ import {
     History,
     Settings,
     Sparkles,
-    Video
+    Clapperboard
 } from 'lucide-react';
 import Dashboard from '../pages/Dashboard';
 import Tasks from '../pages/Tasks';
@@ -97,10 +97,10 @@ export const routes: RouteConfig[] = [
     },
     {
         path: '/fast-reference',
-        title: 'Fast Reference Video',
+        title: 'Fast Reference',
         i18nKey: 'nav.fast_reference',
         element: <FastReference />,
-        icon: Video,
+        icon: Clapperboard,
         showInSidebar: true,
         section: 'Core'
     },

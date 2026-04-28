@@ -19,7 +19,7 @@ import {
     Upload
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { accountsApi, fastReferenceApi, Account, AccountStats } from '../services/api'
+import { accountsApi, Account, AccountStats } from '../services/api'
 import { REGION_MAP, parseRegion as parseRegionUtil } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 import { useLanguage } from '@/contexts/LanguageContext'
@@ -262,7 +262,7 @@ export default function Accounts() {
     const handleFastToggle = async (account: Account, enabled: boolean) => {
         setActionState({ id: account.id, type: 'fast_toggle' })
         try {
-            await fastReferenceApi.toggleAccount(account.id, enabled)
+            await accountsApi.toggleFastReference(account.id, enabled)
             toast.success(enabled ? 'Fast Reference Enabled' : 'Fast Reference Disabled')
             fetchAccounts(true)
         } catch (error: any) {
@@ -895,9 +895,9 @@ export default function Accounts() {
                                                     onClick={() => handleFastToggle(account, !account.fast_enabled)}
                                                     disabled={actionState?.id === account.id}
                                                 >
-                                                    <Power className="mr-2 h-4 w-4" />
-                                                    <span className={account.fast_enabled ? "text-red-500" : "text-amber-500"}>
-                                                        {account.fast_enabled ? "禁用快速参考" : "启用快速参考"}
+                                                    <ZapOff className="mr-2 h-4 w-4" />
+                                                    <span className={account.fast_enabled ? "text-red-500" : "text-green-500"}>
+                                                        {account.fast_enabled ? "禁用 Fast Ref" : "启用 Fast Ref"}
                                                     </span>
                                                 </DropdownMenuItem>
                                                 <DropdownMenuItem

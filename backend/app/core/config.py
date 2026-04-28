@@ -104,18 +104,18 @@ class Settings(BaseSettings):
         default=20, description="视频异步轮询间隔（秒）"
     )
 
-    # 快速参考视频生成配置
-    fast_max_browsers: int = Field(default=3, description="快速参考最大并发浏览器数")
+    # Fast Reference 配置
+    fast_max_browsers: int = Field(default=3, description="快速参考最大浏览器并发数")
     fast_account_strategy: str = Field(
-        default="one_time", description="账号消费策略: reusable/one_time/disable_on_low_credit"
+        default="one_time", description="账号消费策略: one_time/reusable/disable_on_low_credit"
     )
     fast_credit_threshold: int = Field(default=10, description="低积分阈值")
-    fast_max_retry: int = Field(default=10, description="最大重试次数")
-    fast_poll_interval: int = Field(default=5, description="视频轮询间隔（秒）")
-    fast_task_timeout: int = Field(default=300, description="任务总超时（秒）")
+    fast_max_retry: int = Field(default=10, description="快速参考最大重试次数")
+    fast_poll_interval: int = Field(default=5, description="快速参考轮询间隔（秒）")
+    fast_task_timeout: int = Field(default=300, description="快速参考任务超时（秒）")
     fast_headless: bool = Field(default=True, description="快速参考浏览器无头模式")
     fast_assets_dir: str = Field(
-        default="data/fast_reference/assets", description="参考素材存储目录"
+        default="data/fast_reference/assets", description="快速参考素材目录"
     )
 
     # Proxy preflight

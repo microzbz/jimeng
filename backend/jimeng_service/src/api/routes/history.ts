@@ -1,40 +1,27 @@
-import Request from "@/lib/request/Request.ts";
-import { request, parseRegionFromToken } from "@/api/controllers/core.ts";
-import logger from "@/lib/logger.ts";
+import Response from '@/lib/response/Response.ts';
+import util from '@/lib/util.ts';
+import { request } from '../controllers/core.ts';
 
 export default {
-  prefix: "/v1/history",
-
-  post: {
-    "/poll": async (request_: Request) => {
-      const { history_ids, submit_ids, token: refreshToken } = request_.body;
-
-      if (!refreshToken) {
-        throw new Error("Missing token");
-      }
-      if (!history_ids?.length && !submit_ids?.length) {
-        throw new Error("Missing history_ids or submit_ids");
-      }
-
-      const regionInfo = parseRegionFromToken(refreshToken);
-      logger.info(
-        `[history/poll] polling ${(history_ids || submit_ids).length} ids ` +
-          `(region=${regionInfo.region})`
-      );
-
-      const result = await request(
-        "post",
-        "/mweb/v1/get_history_by_ids",
-        refreshToken,
-        {
-          data: {
-            history_ids: history_ids || [],
-            submit_ids: submit_ids || [],
-          },
-        }
-      );
-
-      return result;
+    prefix: '/v1',
+    post: {
+        '/history/query': async (ctx: any) => {
+            const { history_ids, submit_ids, token } = ctx.request.body;
+            if (!token || !history_ids) {
+                throw new Error('Missing required fields: token, history_ids');
+            }
+            const result = await request(
+                'post',
+                '/mweb/v1/get_history_by_ids',
+                token,
+                {
+                    data: {
+                        history_ids: history_ids,
+                        submit_ids: submit_ids || history_ids,
+                    },
+                }
+            );
+            return new Response(result);
+        },
     },
-  },
 };

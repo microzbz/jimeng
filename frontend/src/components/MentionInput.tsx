@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { ReferenceAsset } from '@/services/api'
+import { cn } from '@/lib/utils'
 
 interface MentionInputProps {
     value: string
@@ -12,123 +13,124 @@ interface MentionInputProps {
 export default function MentionInput({ value, onChange, assets, placeholder, className }: MentionInputProps) {
     const [showDropdown, setShowDropdown] = useState(false)
     const [query, setQuery] = useState('')
-    const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 })
-    const [selectedIdx, setSelectedIdx] = useState(0)
+    const [selectedIndex, setSelectedIndex] = useState(0)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
-    const mentionStart = useRef<number>(-1)
+    const dropdownRef = useRef<HTMLDivElement>(null)
+    const mentionStartRef = useRef<number>(-1)
 
     const filtered = assets.filter(a => {
         const q = query.toLowerCase()
-        if (a.name.toLowerCase().includes(q)) return true
-        if (a.alias) {
-            return a.alias.split(',').some(al => al.trim().toLowerCase().includes(q))
-        }
-        return false
+        return a.name.toLowerCase().includes(q) || (a.alias || '').toLowerCase().includes(q)
     }).slice(0, 8)
 
-    const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-        const val = e.target.value
-        const pos = e.target.selectionStart || 0
-        onChange(val)
+    const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+        const newValue = e.target.value
+        onChange(newValue)
 
-        const before = val.slice(0, pos)
-        const atIdx = before.lastIndexOf('@')
-        if (atIdx >= 0 && (atIdx === 0 || before[atIdx - 1] === ' ' || before[atIdx - 1] === '\n')) {
-            const q = before.slice(atIdx + 1)
-            if (!q.includes(' ') && !q.includes('\n')) {
-                mentionStart.current = atIdx
-                setQuery(q)
-                setSelectedIdx(0)
-                setShowDropdown(true)
-                updateDropdownPosition(e.target, atIdx)
-                return
-            }
+        const cursorPos = e.target.selectionStart || 0
+        const textBeforeCursor = newValue.slice(0, cursorPos)
+        const atMatch = textBeforeCursor.match(/@([A-Za-z0-9_\-一-鿿]*)$/)
+
+        if (atMatch) {
+            mentionStartRef.current = cursorPos - atMatch[1].length - 1
+            setQuery(atMatch[1])
+            setSelectedIndex(0)
+            setShowDropdown(true)
+        } else {
+            setShowDropdown(false)
         }
-        setShowDropdown(false)
-    }, [onChange])
+    }
 
-    const updateDropdownPosition = (textarea: HTMLTextAreaElement, _atIdx: number) => {
-        const rect = textarea.getBoundingClientRect()
-        setDropdownPos({
-            top: rect.height + 4,
-            left: 8,
+    const insertMention = (asset: ReferenceAsset) => {
+        const start = mentionStartRef.current
+        if (start < 0) return
+        const ta = textareaRef.current
+        const cursorPos = ta?.selectionStart || value.length
+        const before = value.slice(0, start)
+        const after = value.slice(cursorPos)
+        const newValue = `${before}@${asset.name} ${after}`
+        onChange(newValue)
+        setShowDropdown(false)
+
+        requestAnimationFrame(() => {
+            if (ta) {
+                const newPos = start + asset.name.length + 2
+                ta.selectionStart = newPos
+                ta.selectionEnd = newPos
+                ta.focus()
+            }
         })
     }
 
-    const selectAsset = useCallback((asset: ReferenceAsset) => {
-        const start = mentionStart.current
-        if (start < 0) return
-        const before = value.slice(0, start)
-        const cursorPos = textareaRef.current?.selectionStart || value.length
-        const after = value.slice(cursorPos)
-        const newVal = `${before}@${asset.name} ${after}`
-        onChange(newVal)
-        setShowDropdown(false)
-        setTimeout(() => {
-            const newPos = start + asset.name.length + 2
-            textareaRef.current?.setSelectionRange(newPos, newPos)
-            textareaRef.current?.focus()
-        }, 0)
-    }, [value, onChange])
-
-    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const handleKeyDown = (e: React.KeyboardEvent) => {
         if (!showDropdown || filtered.length === 0) return
+
         if (e.key === 'ArrowDown') {
             e.preventDefault()
-            setSelectedIdx(i => (i + 1) % filtered.length)
+            setSelectedIndex(i => (i + 1) % filtered.length)
         } else if (e.key === 'ArrowUp') {
             e.preventDefault()
-            setSelectedIdx(i => (i - 1 + filtered.length) % filtered.length)
-        } else if (e.key === 'Enter' || e.key === 'Tab') {
+            setSelectedIndex(i => (i - 1 + filtered.length) % filtered.length)
+        } else if (e.key === 'Enter') {
             e.preventDefault()
-            selectAsset(filtered[selectedIdx])
+            insertMention(filtered[selectedIndex])
         } else if (e.key === 'Escape') {
             setShowDropdown(false)
         }
-    }, [showDropdown, filtered, selectedIdx, selectAsset])
+    }
 
     useEffect(() => {
-        const handleClick = () => setShowDropdown(false)
-        document.addEventListener('click', handleClick)
-        return () => document.removeEventListener('click', handleClick)
+        const handleClickOutside = (e: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+                setShowDropdown(false)
+            }
+        }
+        document.addEventListener('mousedown', handleClickOutside)
+        return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [])
 
     return (
-        <div className="relative w-full">
+        <div className="relative flex-1">
             <textarea
                 ref={textareaRef}
                 value={value}
                 onChange={handleInput}
                 onKeyDown={handleKeyDown}
                 placeholder={placeholder}
-                className={className}
+                className={cn(
+                    "w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground",
+                    className
+                )}
                 rows={2}
             />
             {showDropdown && filtered.length > 0 && (
                 <div
-                    className="absolute z-50 w-64 max-h-48 overflow-y-auto rounded-lg border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl"
-                    style={{ top: dropdownPos.top, left: dropdownPos.left }}
-                    onClick={e => e.stopPropagation()}
+                    ref={dropdownRef}
+                    className="absolute z-50 w-64 rounded-md border bg-popover shadow-lg"
+                    style={{ bottom: '100%', left: 0, marginBottom: 4 }}
                 >
-                    {filtered.map((asset, idx) => (
-                        <button
+                    {filtered.map((asset, i) => (
+                        <div
                             key={asset.id}
-                            className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 transition-colors ${
-                                idx === selectedIdx ? 'bg-white/10 text-white' : 'text-zinc-300 hover:bg-white/5'
-                            }`}
-                            onMouseDown={e => { e.preventDefault(); selectAsset(asset) }}
-                            onMouseEnter={() => setSelectedIdx(idx)}
+                            className={cn(
+                                "flex items-center gap-2 px-3 py-2 text-sm cursor-pointer",
+                                i === selectedIndex && "bg-accent"
+                            )}
+                            onMouseDown={(e) => { e.preventDefault(); insertMention(asset) }}
+                            onMouseEnter={() => setSelectedIndex(i)}
                         >
                             {asset.thumbnail_path ? (
-                                <img src={`/${asset.thumbnail_path}`} className="w-6 h-6 rounded object-cover" alt="" />
+                                <img src={asset.thumbnail_path} className="h-6 w-6 rounded object-cover" alt="" />
                             ) : (
-                                <div className="w-6 h-6 rounded bg-zinc-700 flex items-center justify-center text-xs">
-                                    {asset.asset_type === 'video' ? '🎬' : '🖼'}
+                                <div className="h-6 w-6 rounded bg-muted flex items-center justify-center text-xs">
+                                    {asset.name[0]}
                                 </div>
                             )}
-                            <span className="truncate">{asset.name}</span>
-                            {asset.alias && <span className="text-zinc-500 text-xs truncate">({asset.alias})</span>}
-                        </button>
+                            <div className="flex-1 min-w-0">
+                                <div className="truncate font-medium">{asset.name}</div>
+                                {asset.alias && <div className="truncate text-xs text-muted-foreground">{asset.alias}</div>}
+                            </div>
+                        </div>
                     ))}
                 </div>
             )}

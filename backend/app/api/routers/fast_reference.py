@@ -1,277 +1,284 @@
 """
-快速参考视频生成 API 路由
+Fast Reference API Router — 快速参考视频生成 API
 """
 
 import json
-from datetime import datetime
-from typing import Optional, List
+import os
+import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, HTTPException
-from sqlalchemy import select, func, update, delete
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import get_db
-from app.models import ContentGenerationJob, Account
+from app.core.config import settings
+from app.core.database import get_db
+from app.models import ContentGenerationJob
 from app.models.reference_asset import ReferenceAsset, ContentJobReference
-from app.schemas import (
-    FastReferenceJobRequest,
-    ReferenceAssetResponse,
-    ReferenceAssetCreate,
-    MentionResolveRequest,
-    MentionResolveResponse,
-    ContentGenerationJobResponse,
-)
-from app.services.content_generation import content_generation_service
+from app.schemas import FastReferenceJobRequest, ReferenceAssetResponse
 from app.services.reference_asset_service import ReferenceAssetService
-from app.api.routers.content_generation import _to_job_response
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
 
-
-# ==================== Job Endpoints ====================
+router = APIRouter(prefix="/api/fast-reference", tags=["fast-reference"])
 
 
-@router.post("/jobs", response_model=ContentGenerationJobResponse)
-async def create_fast_reference_job(
-    req: FastReferenceJobRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    resolved, missing = await ReferenceAssetService.resolve_mentions(db, req.prompt)
+@router.post("/jobs")
+async def create_job(req: FastReferenceJobRequest, db: AsyncSession = Depends(get_db)):
+    mention_names = ReferenceAssetService.extract_mentions(req.prompt)
+    resolved, missing = await ReferenceAssetService.resolve_mentions(db, mention_names)
     if missing:
-        raise HTTPException(
-            status_code=422,
-            detail=f"未找到素材: {', '.join(missing)}",
-        )
+        raise HTTPException(400, f"Unresolved references: {', '.join(missing)}")
 
     job = ContentGenerationJob(
         job_type="video",
-        function_mode="fast_reference",
         prompt=req.prompt,
-        model=req.model or "Dreamina Seedance 2.0 Fast",
-        duration=req.duration or 5,
-        resolution=req.resolution or "720p",
-        ratio=req.ratio or "16:9",
+        model=req.model or "Seedance 2.0 Fast",
+        function_mode="fast_reference",
         status="queued",
         retry_count=0,
-        max_retry=10,
+        max_retry=settings.fast_max_retry,
+        duration=req.duration,
+        resolution=req.resolution,
+        ratio=req.ratio,
     )
     db.add(job)
     await db.flush()
-    await db.refresh(job)
 
-    if resolved:
-        await ReferenceAssetService.create_job_references(db, job.id, resolved)
+    for i, (name, asset_id, file_path) in enumerate(resolved):
+        ref = ContentJobReference(job_id=job.id, asset_id=asset_id, position=i)
+        db.add(ref)
 
     await db.commit()
     await db.refresh(job)
 
-    await content_generation_service.enqueue(job.id)
+    from app.main import fast_reference_service
+    if fast_reference_service:
+        await fast_reference_service.enqueue(job.id)
 
-    return _to_job_response(job)
+    return {"id": job.id, "status": job.status, "prompt": job.prompt}
 
 
-@router.get("/jobs", response_model=List[ContentGenerationJobResponse])
-async def list_fast_reference_jobs(
+@router.get("/jobs")
+async def list_jobs(
     status: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = (
-        select(ContentGenerationJob)
-        .where(ContentGenerationJob.function_mode == "fast_reference")
-        .order_by(ContentGenerationJob.created_at.desc())
+    stmt = select(ContentGenerationJob).where(
+        ContentGenerationJob.function_mode == "fast_reference"
     )
     if status:
         stmt = stmt.where(ContentGenerationJob.status == status)
+    stmt = stmt.order_by(ContentGenerationJob.id.desc())
+
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await db.execute(count_stmt)).scalar() or 0
+
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    result = await db.execute(stmt)
-    return [_to_job_response(j) for j in result.scalars().all()]
+    jobs = (await db.execute(stmt)).scalars().all()
+
+    return {
+        "items": [_job_to_dict(j) for j in jobs],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
-@router.get("/jobs/{job_id}", response_model=ContentGenerationJobResponse)
-async def get_fast_reference_job(
-    job_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    job = await db.get(ContentGenerationJob, job_id)
-    if not job or job.function_mode != "fast_reference":
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return _to_job_response(job)
-
-
-@router.post("/jobs/{job_id}/retry", response_model=ContentGenerationJobResponse)
-async def retry_fast_reference_job(
-    job_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    job = await db.get(ContentGenerationJob, job_id)
-    if not job or job.function_mode != "fast_reference":
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if job.status not in ("failed",):
-        raise HTTPException(status_code=400, detail="只能重试失败的任务")
-
-    current_retry = getattr(job, "retry_count", 0) or 0
-    max_retry = getattr(job, "max_retry", 10) or 10
-    if current_retry >= max_retry:
-        raise HTTPException(status_code=400, detail=f"已达最大重试次数 ({max_retry})")
-
-    await db.execute(
-        update(ContentGenerationJob)
-        .where(ContentGenerationJob.id == job_id)
-        .values(
-            status="queued",
-            error_message=None,
-            remote_task_id=None,
-            remote_history_id=None,
-            retry_count=current_retry + 1,
-            updated_at=datetime.now(),
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (
+        await db.execute(
+            select(ContentGenerationJob).where(ContentGenerationJob.id == job_id)
         )
-    )
-    await db.commit()
-    await db.refresh(job)
+    ).scalar_one_or_none()
+    if not job or job.function_mode != "fast_reference":
+        raise HTTPException(404, "Job not found")
+    return _job_to_dict(job)
 
-    await content_generation_service.enqueue(job_id)
-    return _to_job_response(job)
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (
+        await db.execute(
+            select(ContentGenerationJob).where(ContentGenerationJob.id == job_id)
+        )
+    ).scalar_one_or_none()
+    if not job or job.function_mode != "fast_reference":
+        raise HTTPException(404, "Job not found")
+    if job.status not in ("failed",):
+        raise HTTPException(400, "Only failed jobs can be retried")
+
+    job.status = "queued"
+    job.retry_count = (job.retry_count or 0) + 1
+    job.error_message = None
+    await db.commit()
+
+    from app.main import fast_reference_service
+    if fast_reference_service:
+        await fast_reference_service.enqueue(job.id)
+
+    return {"id": job.id, "status": "queued"}
 
 
 @router.delete("/jobs/{job_id}")
-async def delete_fast_reference_job(
-    job_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    job = await db.get(ContentGenerationJob, job_id)
-    if not job or job.function_mode != "fast_reference":
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    if job.status in ("queued", "submitting"):
+async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = (
         await db.execute(
-            update(ContentGenerationJob)
-            .where(ContentGenerationJob.id == job_id)
-            .values(status="cancelled", updated_at=datetime.now())
+            select(ContentGenerationJob).where(ContentGenerationJob.id == job_id)
         )
-        await db.commit()
-        return {"message": "任务已取消"}
-
-    await db.execute(
-        delete(ContentJobReference).where(ContentJobReference.job_id == job_id)
-    )
+    ).scalar_one_or_none()
+    if not job or job.function_mode != "fast_reference":
+        raise HTTPException(404, "Job not found")
+    if job.status in ("submitting", "submitted", "processing"):
+        raise HTTPException(400, "Cannot delete active job")
     await db.delete(job)
     await db.commit()
-    return {"message": "任务已删除"}
+    return {"message": "deleted"}
 
 
-# ==================== Asset Endpoints ====================
+# ==================== Asset CRUD ====================
 
 
-@router.get("/assets", response_model=List[ReferenceAssetResponse])
+@router.get("/assets")
 async def list_assets(
     search: Optional[str] = Query(None),
-    asset_type: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    return await ReferenceAssetService.list_assets(db, search=search, asset_type=asset_type)
+    assets = await ReferenceAssetService.list_assets(
+        db, search=search, offset=(page - 1) * page_size, limit=page_size
+    )
+    total_stmt = select(func.count()).select_from(ReferenceAsset)
+    if search:
+        total_stmt = total_stmt.where(
+            ReferenceAsset.name.contains(search)
+            | ReferenceAsset.alias.contains(search)
+        )
+    total = (await db.execute(total_stmt)).scalar() or 0
+    return {
+        "items": [ReferenceAssetResponse.model_validate(a).model_dump() for a in assets],
+        "total": total,
+    }
 
 
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
-ALLOWED_MIME_PREFIXES = ("image/", "video/")
+ALLOWED_MIME_PREFIXES = ("image/",)
+ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}
+MAX_ASSET_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
-@router.post("/assets", response_model=ReferenceAssetResponse)
+@router.post("/assets")
 async def upload_asset(
     file: UploadFile = File(...),
-    name: str = Form(...),
+    name: Optional[str] = Form(None),
     alias: Optional[str] = Form(None),
-    asset_type: str = Form("image"),
     description: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
-    if asset_type not in ("image", "video"):
-        raise HTTPException(status_code=400, detail="asset_type must be image or video")
-    content_type = file.content_type or ""
-    if not any(content_type.startswith(p) for p in ALLOWED_MIME_PREFIXES):
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
-    file_data = await file.read()
-    if len(file_data) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported file extension: {ext}")
+    if file.content_type and not file.content_type.startswith(ALLOWED_MIME_PREFIXES[0]):
+        raise HTTPException(400, f"Unsupported MIME type: {file.content_type}")
+
+    assets_dir = ReferenceAssetService.get_assets_dir()
+    file_bytes = await file.read()
+
+    if len(file_bytes) > MAX_ASSET_SIZE:
+        raise HTTPException(400, f"File too large (max {MAX_ASSET_SIZE // 1024 // 1024}MB)")
+
+    asset_name = name or os.path.splitext(file.filename or "unnamed")[0]
+    existing = await ReferenceAssetService.get_asset_by_name(db, asset_name)
+    if existing:
+        raise HTTPException(400, f"Asset name '{asset_name}' already exists")
+
+    sha256 = ReferenceAssetService.compute_sha256(file_bytes)
+    ext = os.path.splitext(file.filename or "")[1] or ".png"
+    file_path = assets_dir / f"{sha256}{ext}"
+    file_path.write_bytes(file_bytes)
+
     asset = await ReferenceAssetService.create_asset(
         db,
-        name=name,
-        file_data=file_data,
-        filename=file.filename or "upload.bin",
-        mime_type=file.content_type or "application/octet-stream",
+        name=asset_name,
+        file_path=str(file_path),
         alias=alias,
-        asset_type=asset_type,
+        file_size=len(file_bytes),
+        sha256=sha256,
+        mime_type=file.content_type,
         description=description,
         tags=tags,
     )
-    await db.commit()
-    return asset
+    return ReferenceAssetResponse.model_validate(asset).model_dump()
 
 
-@router.put("/assets/{asset_id}", response_model=ReferenceAssetResponse)
+@router.put("/assets/{asset_id}")
 async def update_asset(
     asset_id: int,
     name: Optional[str] = Form(None),
     alias: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db),
 ):
-    file_data = None
-    filename = None
-    mime_type = None
-    if file:
-        content_type = file.content_type or ""
-        if not any(content_type.startswith(p) for p in ALLOWED_MIME_PREFIXES):
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
-        file_data = await file.read()
-        if len(file_data) > MAX_UPLOAD_SIZE:
-            raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024}MB)")
-        filename = file.filename
-        mime_type = file.content_type
+    kwargs = {}
+    if name is not None:
+        kwargs["name"] = name
+    if alias is not None:
+        kwargs["alias"] = alias
+    if description is not None:
+        kwargs["description"] = description
+    if tags is not None:
+        kwargs["tags"] = tags
 
-    asset = await ReferenceAssetService.update_asset(
-        db,
-        asset_id,
-        name=name,
-        alias=alias,
-        description=description,
-        tags=tags,
-        file_data=file_data,
-        filename=filename,
-        mime_type=mime_type,
-    )
+    asset = await ReferenceAssetService.update_asset(db, asset_id, **kwargs)
     if not asset:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    await db.commit()
-    return asset
+        raise HTTPException(404, "Asset not found")
+    return ReferenceAssetResponse.model_validate(asset).model_dump()
 
 
 @router.delete("/assets/{asset_id}")
-async def delete_asset(
-    asset_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    ok = await ReferenceAssetService.delete_asset(db, asset_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    await db.commit()
-    return {"message": "素材已删除"}
+async def delete_asset(asset_id: int, db: AsyncSession = Depends(get_db)):
+    active_refs = (
+        await db.execute(
+            select(func.count())
+            .select_from(ContentJobReference)
+            .join(ContentGenerationJob)
+            .where(
+                ContentJobReference.asset_id == asset_id,
+                ContentGenerationJob.status.in_(
+                    ["queued", "submitting", "submitted", "processing"]
+                ),
+            )
+        )
+    ).scalar() or 0
+    if active_refs > 0:
+        raise HTTPException(400, "Asset is referenced by active jobs")
+
+    deleted = await ReferenceAssetService.delete_asset(db, asset_id)
+    if not deleted:
+        raise HTTPException(404, "Asset not found")
+    return {"message": "deleted"}
 
 
-@router.post("/assets/resolve", response_model=MentionResolveResponse)
+@router.post("/assets/resolve")
 async def resolve_mentions(
-    req: MentionResolveRequest,
+    body: dict,
     db: AsyncSession = Depends(get_db),
 ):
-    resolved, missing = await ReferenceAssetService.resolve_mentions(db, req.prompt)
-    return MentionResolveResponse(mentions=resolved, missing=missing)
-
-
-# ==================== Account Pool Endpoints ====================
+    prompt = body.get("prompt", "")
+    mention_names = ReferenceAssetService.extract_mentions(prompt)
+    resolved, missing = await ReferenceAssetService.resolve_mentions(db, mention_names)
+    return {
+        "matches": [
+            {"name": name, "asset_id": aid, "file_path": fp}
+            for name, aid, fp in resolved
+        ],
+        "missing": missing,
+    }
 
 
 @router.post("/accounts/{account_id}/toggle")
@@ -280,52 +287,38 @@ async def toggle_fast_account(
     is_enabled: bool = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    account = await db.get(Account, account_id)
+    from app.models import Account
+
+    account = (
+        await db.execute(select(Account).where(Account.id == account_id))
+    ).scalar_one_or_none()
     if not account:
-        raise HTTPException(status_code=404, detail="账号不存在")
-    if is_enabled and (
-        not account.session_id or account.health_status != "healthy"
-    ):
-        raise HTTPException(status_code=400, detail="账号不符合条件")
-    await db.execute(
-        update(Account)
-        .where(Account.id == account_id)
-        .values(fast_enabled=is_enabled)
-    )
+        raise HTTPException(404, "Account not found")
+    account.fast_enabled = is_enabled
     await db.commit()
     return {"message": "ok"}
 
 
-@router.post("/accounts/batch-toggle")
-async def batch_toggle_fast_accounts(
-    is_enabled: bool = Query(...),
-    status: Optional[str] = Query(None),
-    health_status: Optional[str] = Query(None),
-    region: Optional[str] = Query(None),
-    search: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db),
-):
-    stmt = select(Account)
-    if status:
-        if status == "success":
-            stmt = stmt.where(Account.status.in_(["success", "active"]))
-        else:
-            stmt = stmt.where(Account.status == status)
-    if health_status:
-        stmt = stmt.where(Account.health_status == health_status)
-    if region and region != "all":
-        stmt = stmt.where(Account.region.ilike(f"%{region}%"))
-    if search:
-        stmt = stmt.where(Account.email.ilike(f"%{search}%"))
-
-    accounts = (await db.execute(stmt)).scalars().all()
-    updated = 0
-    for acct in accounts:
-        if is_enabled and (not acct.session_id or acct.health_status != "healthy"):
-            continue
-        await db.execute(
-            update(Account).where(Account.id == acct.id).values(fast_enabled=is_enabled)
-        )
-        updated += 1
-    await db.commit()
-    return {"message": f"已更新 {updated} 个账号"}
+def _job_to_dict(job) -> dict:
+    local_urls = []
+    if job.local_urls:
+        try:
+            local_urls = json.loads(job.local_urls)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {
+        "id": job.id,
+        "prompt": job.prompt,
+        "model": job.model,
+        "status": job.status,
+        "function_mode": job.function_mode,
+        "account_id": job.account_id,
+        "remote_task_id": job.remote_task_id,
+        "error_message": job.error_message,
+        "local_urls": local_urls,
+        "video_url": getattr(job, "video_url", None),
+        "retry_count": getattr(job, "retry_count", 0),
+        "created_at": str(job.created_at) if job.created_at else None,
+        "submitted_at": str(job.submitted_at) if job.submitted_at else None,
+        "finished_at": str(job.finished_at) if job.finished_at else None,
+    }

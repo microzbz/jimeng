@@ -68,8 +68,9 @@ class AccountResponse(AccountBase):
     gen_last_used_at: Optional[datetime] = None
     gen_locked_until: Optional[datetime] = None
     gen_auto_disabled_reason: Optional[str] = None
+    gen_lock_job_id: Optional[int] = None
 
-    # 快速参考生成池
+    # Fast Reference 池
     fast_enabled: bool = False
 
     class Config:
@@ -132,73 +133,9 @@ class ContentGenerationJobResponse(BaseModel):
     finished_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    retry_count: int = 0
-    max_retry: int = 10
-    video_url: Optional[str] = None
-    polling_region: Optional[str] = None
-    browser_started_at: Optional[datetime] = None
-    browser_finished_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
-
-
-# ==================== Fast Reference Schemas ====================
-
-
-class FastReferenceJobRequest(BaseModel):
-    """快速参考视频生成请求"""
-
-    prompt: str = Field(..., description="提示词（支持 @mention 引用素材）")
-    model: Optional[str] = Field(default="Dreamina Seedance 2.0 Fast", description="模型")
-    duration: Optional[int] = Field(default=5, description="视频时长(秒)")
-    resolution: Optional[str] = Field(default="720p", description="分辨率")
-    ratio: Optional[str] = Field(default="16:9", description="比例")
-
-
-class ReferenceAssetResponse(BaseModel):
-    """参考素材响应"""
-
-    id: int
-    name: str
-    alias: Optional[str] = None
-    asset_type: str = "image"
-    file_path: str
-    file_url: Optional[str] = None
-    thumbnail_path: Optional[str] = None
-    file_size: int = 0
-    mime_type: Optional[str] = None
-    description: Optional[str] = None
-    tags: Optional[str] = None
-    usage_count: int = 0
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-class ReferenceAssetCreate(BaseModel):
-    """创建参考素材（文件通过 multipart 上传）"""
-
-    name: str = Field(..., description="素材名称")
-    alias: Optional[str] = Field(default=None, description="别名（逗号分隔）")
-    asset_type: str = Field(default="image", description="类型: image/video")
-    description: Optional[str] = None
-    tags: Optional[str] = None
-
-
-class MentionResolveRequest(BaseModel):
-    """@mention 解析请求"""
-
-    prompt: str = Field(..., description="包含 @mention 的提示词")
-
-
-class MentionResolveResponse(BaseModel):
-    """@mention 解析响应"""
-
-    mentions: List[dict] = Field(default_factory=list, description="已解析的引用")
-    missing: List[str] = Field(default_factory=list, description="未找到的引用名")
 
 
 # ==================== Task Schemas ====================
@@ -500,3 +437,38 @@ class MessageResponse(BaseModel):
 
     message: str
     success: bool = True
+
+
+# ==================== Fast Reference Schemas ====================
+
+
+class FastReferenceJobRequest(BaseModel):
+    """快速参考视频生成请求"""
+
+    prompt: str = Field(..., description="提示词（支持 @mention 引用素材）")
+    model: Optional[str] = Field(default="Seedance 2.0 Fast", description="模型")
+    duration: Optional[int] = Field(default=5, description="视频时长(秒)")
+    resolution: Optional[str] = Field(default="720p", description="分辨率")
+    ratio: Optional[str] = Field(default="16:9", description="宽高比")
+
+
+class ReferenceAssetResponse(BaseModel):
+    """参考素材响应"""
+
+    id: int
+    name: str
+    alias: Optional[str] = None
+    asset_type: str = "image"
+    file_path: str
+    file_url: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[str] = None
+    usage_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

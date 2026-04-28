@@ -1,13 +1,15 @@
 """
-快速参考视频生成 — 浏览器自动化执行器
+FastReferenceBrowserExecutor — 浏览器自动化提交视频生成任务
 """
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from datetime import datetime
+from typing import List, Optional
 
-from patchright.async_api import async_playwright, BrowserContext, Page, Browser
+from patchright.async_api import async_playwright, Page, BrowserContext, Browser, Playwright, Response
 
 from app.core.config import settings
 from app.services.browser_stealth import BrowserStealth
@@ -15,236 +17,239 @@ from app.services.human_behavior import HumanBehavior
 
 logger = logging.getLogger(__name__)
 
+TARGET_URL = "https://dreamina.capcut.com/ai-tool/video/generate"
+GENERATE_INTERCEPT = "/mweb/v1/aigc_draft/generate"
+MENTION_RE = re.compile(r"@[A-Za-z0-9_\-一-鿿]+")
+
 
 @dataclass
 class FastReferenceResult:
-    task_id: Optional[str] = None
-    history_id: Optional[str] = None
     success: bool = False
+    history_id: Optional[str] = None
+    task_id: Optional[str] = None
     error: Optional[str] = None
     browser_session_log: str = ""
+    submitted_evidence: bool = False
 
 
 class FastReferenceBrowserExecutor:
-    TARGET_URL = "https://dreamina.capcut.com/ai-tool/video/generate"
 
     def __init__(
         self,
         session_id: str,
-        region_tag: str = "TW",
-        proxy_config: Optional[Dict[str, str]] = None,
+        prompt: str,
+        region: Optional[str] = None,
+        reference_files: Optional[List[str]] = None,
+        proxy_url: Optional[str] = None,
     ):
         self.session_id = session_id
-        self.region_tag = region_tag
-        self.proxy_config = proxy_config
-        self.captured_task_id: Optional[str] = None
-        self.captured_history_id: Optional[str] = None
-        self._log_lines: List[str] = []
+        self.prompt = prompt
+        self.region = region
+        self.reference_files = reference_files or []
+        self.proxy_url = proxy_url
+        self._log_lines: list = []
+        self._captured_history_id: Optional[str] = None
+        self._captured_task_id: Optional[str] = None
 
     def _log(self, msg: str):
-        self._log_lines.append(msg)
-        logger.info(f"[FastRef] {msg}")
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        self._log_lines.append(line)
+        logger.info("FastRef: %s", msg)
 
-    async def execute(
-        self,
-        prompt: str,
-        reference_assets: Optional[List[str]] = None,
-        model: str = "Dreamina Seedance 2.0 Fast",
-        duration: int = 5,
-        resolution: str = "720p",
-        ratio: str = "16:9",
-    ) -> FastReferenceResult:
+    async def execute(self) -> FastReferenceResult:
+        pw: Optional[Playwright] = None
         browser: Optional[Browser] = None
         context: Optional[BrowserContext] = None
         page: Optional[Page] = None
+        result = FastReferenceResult()
 
         try:
-            async with async_playwright() as p:
-                stealth = BrowserStealth(p)
-                self._log("launching browser")
+            proxy = None
+            if self.proxy_url:
+                proxy = {"server": self.proxy_url}
 
-                context = await stealth.create_context(
-                    region_tag=self.region_tag,
-                    proxy=self.proxy_config,
-                    headless=settings.fast_headless,
-                )
-                browser = context.browser
+            pw = await async_playwright().start()
+            stealth = BrowserStealth(pw)
 
-                await self._inject_cookies(context)
-                self._log("cookies injected")
+            context = await stealth.create_context(
+                region_tag=self.region,
+                proxy=proxy,
+                headless=settings.fast_headless,
+            )
+            browser = context.browser
 
-                page = await stealth.create_page(context)
-                human = HumanBehavior(page)
+            await self._inject_cookies(context)
+            page = await context.new_page()
+            human = HumanBehavior(page)
+            self._setup_interceptor(page)
 
-                await self._setup_network_interceptor(page)
+            self._log(f"Navigating to {TARGET_URL}")
+            await page.goto(TARGET_URL, wait_until="networkidle", timeout=30000)
 
-                self._log(f"navigating to {self.TARGET_URL}")
-                await page.goto(
-                    self.TARGET_URL,
-                    wait_until="networkidle",
-                    timeout=30000,
-                )
-                await human.random_delay(1000, 2000)
+            await BrowserStealth.dismiss_error_modal(page)
+            await human.close_popup_if_exists()
 
-                await BrowserStealth.dismiss_error_modal(page)
-                await human.close_popup_if_exists()
-                self._log("page loaded, modals dismissed")
+            if self.reference_files:
+                await self._upload_references(page)
 
-                if reference_assets:
-                    await self._upload_references(page, human, reference_assets)
-                    self._log(f"uploaded {len(reference_assets)} assets")
+            await self._fill_prompt(page, human)
+            await self._click_generate(page, human)
 
-                await self._fill_prompt(page, human, prompt)
-                self._log("prompt filled")
+            history_id = await self._wait_for_task_id()
 
-                await self._click_generate(page, human)
-                self._log("generate clicked, waiting for task_id")
+            if history_id:
+                result.success = True
+                result.history_id = self._captured_history_id
+                result.task_id = self._captured_task_id
+                self._log(f"Task captured: history_id={history_id}")
+            else:
+                has_evidence = await self._detect_submission_evidence(page)
+                result.submitted_evidence = has_evidence
+                if has_evidence:
+                    result.error = "ambiguous_submission"
+                    self._log("Submission evidence detected but no history_id captured")
+                else:
+                    result.error = "no_task_id_captured"
+                    self._log("No submission evidence, task likely not submitted")
 
-                await self._wait_for_task_id(timeout=15000)
-                self._log(f"captured history_id={self.captured_history_id}")
-
-                return FastReferenceResult(
-                    task_id=self.captured_task_id,
-                    history_id=self.captured_history_id,
-                    success=True,
-                    browser_session_log="\n".join(self._log_lines),
-                )
-
-        except Exception as e:
-            self._log(f"execution failed: {e}")
+        except asyncio.TimeoutError:
+            result.error = "browser_timeout"
+            self._log("Browser execution timed out")
+        except Exception as exc:
+            result.error = str(exc)
+            self._log(f"Error: {exc}")
             if page:
                 try:
-                    from app.core.config import BASE_DIR
-                    ss_path = BASE_DIR / "data" / "screenshots" / f"fast_ref_error_{id(self)}.png"
-                    await page.screenshot(path=str(ss_path))
-                    self._log(f"error screenshot saved: {ss_path}")
+                    await page.screenshot(
+                        path=f"data/screenshots/fast_ref_error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    )
                 except Exception:
                     pass
-            return FastReferenceResult(
-                success=False,
-                error=str(e),
-                browser_session_log="\n".join(self._log_lines),
-            )
         finally:
-            try:
-                if page and not page.is_closed():
-                    await page.close()
-            except Exception:
-                pass
-            try:
-                if context:
-                    await context.close()
-            except Exception:
-                pass
-            try:
-                if browser and browser.is_connected():
-                    await browser.close()
-            except Exception:
-                pass
+            for closeable in [page, context, browser]:
+                if closeable:
+                    try:
+                        await asyncio.wait_for(closeable.close(), 5)
+                    except Exception:
+                        pass
+            if pw:
+                try:
+                    await pw.stop()
+                except Exception:
+                    pass
+            result.browser_session_log = "\n".join(self._log_lines)
+
+        return result
 
     async def _inject_cookies(self, context: BrowserContext):
-        await context.add_cookies([
-            {
-                "name": "sessionid",
-                "value": self.session_id,
-                "domain": ".capcut.com",
-                "path": "/",
-                "httpOnly": True,
-                "secure": True,
-                "sameSite": "None",
-            }
-        ])
+        self._log("Injecting session cookie")
+        await context.add_cookies(
+            [
+                {
+                    "name": "sessionid",
+                    "value": self.session_id,
+                    "domain": ".capcut.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None",
+                }
+            ]
+        )
 
-    async def _setup_network_interceptor(self, page: Page):
-        async def on_response(response):
-            if "/mweb/v1/aigc_draft/generate" not in response.url:
+    def _setup_interceptor(self, page: Page):
+        async def on_response(response: Response):
+            if GENERATE_INTERCEPT not in response.url:
                 return
             try:
-                body = await response.json()
-                data = body.get("data", {})
-                aigc_data = data.get("aigc_data", {})
-                task_node = aigc_data.get("task", {})
-
-                self.captured_history_id = (
-                    data.get("history_record_id")
-                    or task_node.get("submit_id")
-                )
-                self.captured_task_id = self.captured_history_id
-                self._log(f"intercepted history_id={self.captured_history_id}")
-            except Exception as e:
-                self._log(f"failed to parse generate response: {e}")
+                data = await response.json()
+                body = data.get("data", {})
+                history_id = body.get("history_record_id")
+                if not history_id:
+                    task = body.get("aigc_data", {}).get("task", {})
+                    history_id = task.get("submit_id")
+                if history_id:
+                    self._captured_history_id = str(history_id)
+                    self._log(f"Intercepted history_id: {history_id}")
+                task_data = body.get("aigc_data", {}).get("task", {})
+                if task_data.get("task_id"):
+                    self._captured_task_id = str(task_data["task_id"])
+            except Exception as exc:
+                self._log(f"Interceptor parse error: {exc}")
 
         page.on("response", on_response)
 
-    async def _upload_references(
-        self, page: Page, human: HumanBehavior, file_paths: List[str]
-    ):
-        upload_input = await page.wait_for_selector(
-            'input[type="file"][accept*="image"],'
-            'input[type="file"][accept*="video"],'
-            'input[id*="reference-upload"]',
-            state="attached",
-            timeout=10000,
-        )
-        if not upload_input:
-            raise Exception("未找到文件上传入口")
+    async def _upload_references(self, page: Page):
+        self._log(f"Uploading {len(self.reference_files)} reference files")
+        try:
+            file_input = await page.wait_for_selector(
+                "input[type=file]", timeout=10000
+            )
+            if file_input:
+                await file_input.set_input_files(self.reference_files)
+                await page.wait_for_timeout(2000)
+                self._log("Reference files uploaded")
+        except Exception as exc:
+            self._log(f"Upload failed: {exc}")
 
-        await upload_input.set_input_files(file_paths)
-        await human.random_delay(1000, 2000)
-
-        await page.wait_for_selector(
-            '[class*="upload-preview"],'
-            '[class*="reference-thumb"],'
-            'img[class*="uploaded"]',
-            state="visible",
-            timeout=15000,
-        )
-
-    async def _fill_prompt(self, page: Page, human: HumanBehavior, prompt: str):
+    async def _fill_prompt(self, page: Page, human: HumanBehavior):
+        clean_prompt = MENTION_RE.sub("", self.prompt).strip()
+        clean_prompt = re.sub(r"\s{2,}", " ", clean_prompt)
+        if not clean_prompt:
+            clean_prompt = self.prompt
+        self._log("Filling prompt")
         selectors = [
             'textarea[placeholder*="describe"]',
-            'textarea[placeholder*="Describe"]',
             'textarea[class*="prompt"]',
             '[contenteditable="true"][class*="prompt"]',
-            '[data-testid="prompt-input"]',
+            "textarea",
         ]
-        for selector in selectors:
+        for sel in selectors:
             try:
-                el = await page.wait_for_selector(
-                    selector, state="visible", timeout=3000
-                )
+                el = await page.wait_for_selector(sel, timeout=5000)
                 if el:
-                    await human.type_like_human(selector, prompt)
+                    await el.click()
+                    await human.type_like_human(sel, clean_prompt)
+                    self._log(f"Prompt filled via {sel}")
                     return
             except Exception:
                 continue
-        raise Exception("未找到 prompt 输入框")
+        raise Exception("Could not find prompt input element")
 
     async def _click_generate(self, page: Page, human: HumanBehavior):
+        self._log("Clicking generate button")
         selectors = [
             'button:has-text("Generate")',
             'button:has-text("生成")',
             'button[class*="generate"]',
-            '[data-testid="generate-btn"]',
         ]
-        for selector in selectors:
+        for sel in selectors:
             try:
-                btn = await page.wait_for_selector(
-                    selector, state="visible", timeout=3000
-                )
+                btn = await page.wait_for_selector(sel, timeout=5000)
                 if btn and await btn.is_enabled():
-                    await human.click_like_human(selector)
+                    await human.click_like_human(sel)
+                    self._log(f"Generate clicked via {sel}")
                     return
             except Exception:
                 continue
-        raise Exception("未找到可用的生成按钮")
+        raise Exception("Could not find or click generate button")
 
-    async def _wait_for_task_id(self, timeout: int = 15000):
-        elapsed = 0
-        interval = 500
+    async def _wait_for_task_id(self, timeout: float = 15.0) -> Optional[str]:
+        self._log("Waiting for task_id from interceptor")
+        elapsed = 0.0
         while elapsed < timeout:
-            if self.captured_task_id:
-                return
-            await asyncio.sleep(interval / 1000)
-            elapsed += interval
-        raise Exception(f"等待 task_id 超时 ({timeout}ms)")
+            if self._captured_history_id:
+                return self._captured_history_id
+            await asyncio.sleep(0.5)
+            elapsed += 0.5
+        return None
+
+    async def _detect_submission_evidence(self, page: Page) -> bool:
+        try:
+            loading = await page.query_selector(
+                'button[class*="generate"][disabled], button[class*="loading"]'
+            )
+            return loading is not None
+        except Exception:
+            return False

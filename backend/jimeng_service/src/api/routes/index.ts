@@ -22,7 +22,7 @@ export default [
                         compositions: '/v1/images/compositions',
                         videos: '/v1/videos/generations',
                         tasks: '/v1/tasks/:id',
-                        history_poll: '/v1/history/poll',
+                        history: '/v1/history/query',
                         models: '/v1/models',
                         health: '/ping',
                         async_usage: {
