@@ -138,9 +138,8 @@ npm run dev
 
 | 配置项 | 说明 | 在哪里找 |
 |--------|------|---------|
-| `CF_ACCOUNT_ID` | Account ID | Cloudflare Dashboard → 概览 → 右侧 |
-| `CF_KV_NAMESPACE_ID` | KV 命名空间 ID | Workers & Pages → KV → 你的命名空间 |
-| `CF_API_TOKEN` | API 令牌 | My Profile → API Tokens → 创建令牌 |
+| `CF_MAIL_WORKER_URL` | Mail Worker API 地址 | 部署后的 Worker 域名 (e.g. https://mail.boomstyleai.com) |
+| `CF_MAIL_ADMIN_PASSWORD` | Mail Worker 管理密码 | wrangler.toml 中的 ADMIN_PASSWORD |
 
 ### 可选配置
 
@@ -212,9 +211,10 @@ playwright install chromium
 
 ### 验证码接收失败
 
-1. 确认 Cloudflare Worker 已正确部署
-2. 确认 `.env` 中的 `CF_ACCOUNT_ID`、`CF_KV_NAMESPACE_ID`、`CF_API_TOKEN` 正确
+1. 确认 CF Mail Worker 已正确部署 (`wrangler deploy`)
+2. 确认 `.env` 中的 `CF_MAIL_WORKER_URL` 和 `CF_MAIL_ADMIN_PASSWORD` 正确
 3. 确认 Cloudflare Email Routing 已启用并指向你的 Worker
+4. 访问 `CF_MAIL_WORKER_URL/healthz` 确认 Worker 运行正常
 
 ### Clash 代理连接失败
 

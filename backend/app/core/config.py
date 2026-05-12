@@ -128,18 +128,15 @@ class Settings(BaseSettings):
         description="外部代理列表文件路径 (HTTP/SOCKS5)",
     )
 
-    # Cloudflare KV 配置
-    cf_account_id: Optional[str] = Field(
-        default=None, description="Cloudflare Account ID"
+    # CF Mail Worker 配置
+    cf_mail_worker_url: Optional[str] = Field(
+        default=None, description="CF Mail Worker API 地址 (e.g. https://mail.boomstyleai.com)"
     )
-    cf_kv_namespace_id: Optional[str] = Field(
-        default=None, description="KV Namespace ID"
+    cf_mail_admin_password: Optional[str] = Field(
+        default=None, description="CF Mail Worker 管理密码 (x-admin-auth)"
     )
-    cf_api_token: Optional[str] = Field(
-        default=None, description="Cloudflare API Token"
-    )
-    kv_poll_interval: int = Field(default=3, description="KV 轮询间隔（秒）")
-    kv_poll_timeout: int = Field(default=180, description="KV 查询超时（秒）")
+    kv_poll_interval: int = Field(default=3, description="邮件轮询间隔（秒）")
+    kv_poll_timeout: int = Field(default=180, description="验证码等待超时（秒）")
 
     # Outlook Manager 配置
     outlook_manager_url: Optional[str] = Field(

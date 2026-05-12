@@ -340,9 +340,8 @@ class SettingsResponse(BaseModel):
     proxy_pool_size: int = 10
     ext_proxy_file_path: Optional[str] = None
     ipinfo_token: Optional[str] = None
-    cf_account_id: Optional[str] = None
-    cf_kv_namespace_id: Optional[str] = None
-    cf_api_token: Optional[str] = None
+    cf_mail_worker_url: Optional[str] = None
+    cf_mail_admin_password: Optional[str] = None
     # Outlook Manager
     outlook_manager_url: Optional[str] = None
     outlook_manager_api_key: Optional[str] = None
@@ -378,9 +377,8 @@ class SettingsUpdate(BaseModel):
     proxy_pool_size: Optional[int] = None
     ext_proxy_file_path: Optional[str] = None
     ipinfo_token: Optional[str] = None
-    cf_account_id: Optional[str] = None
-    cf_kv_namespace_id: Optional[str] = None
-    cf_api_token: Optional[str] = None
+    cf_mail_worker_url: Optional[str] = None
+    cf_mail_admin_password: Optional[str] = None
     # Outlook Manager
     outlook_manager_url: Optional[str] = None
     outlook_manager_api_key: Optional[str] = None

@@ -38,9 +38,8 @@ async def get_settings():
         proxy_pool_size=settings.proxy_pool_size,
         ext_proxy_file_path=settings.ext_proxy_file_path,
         ipinfo_token=settings.ipinfo_token,
-        cf_account_id=settings.cf_account_id,
-        cf_kv_namespace_id=settings.cf_kv_namespace_id,
-        cf_api_token=settings.cf_api_token,
+        cf_mail_worker_url=settings.cf_mail_worker_url,
+        cf_mail_admin_password=settings.cf_mail_admin_password,
         outlook_manager_url=settings.outlook_manager_url,
         outlook_manager_api_key=settings.outlook_manager_api_key,
         outlook_poll_interval=settings.outlook_poll_interval,
@@ -141,16 +140,13 @@ async def update_settings(data: SettingsUpdate):
         settings.ipinfo_token = data.ipinfo_token
         updates["IPINFO_TOKEN"] = data.ipinfo_token
 
-    # Cloudflare Settings
-    if data.cf_account_id is not None:
-        settings.cf_account_id = data.cf_account_id
-        updates["CF_ACCOUNT_ID"] = data.cf_account_id
-    if data.cf_kv_namespace_id is not None:
-        settings.cf_kv_namespace_id = data.cf_kv_namespace_id
-        updates["CF_KV_NAMESPACE_ID"] = data.cf_kv_namespace_id
-    if data.cf_api_token is not None:
-        settings.cf_api_token = data.cf_api_token
-        updates["CF_API_TOKEN"] = data.cf_api_token
+    # CF Mail Worker Settings
+    if data.cf_mail_worker_url is not None:
+        settings.cf_mail_worker_url = data.cf_mail_worker_url
+        updates["CF_MAIL_WORKER_URL"] = data.cf_mail_worker_url
+    if data.cf_mail_admin_password is not None:
+        settings.cf_mail_admin_password = data.cf_mail_admin_password
+        updates["CF_MAIL_ADMIN_PASSWORD"] = data.cf_mail_admin_password
 
     # Outlook Manager Settings
     if data.outlook_manager_url is not None:

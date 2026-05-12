@@ -461,9 +461,8 @@ export interface Settings {
     proxy_pool_start_port: number
     proxy_pool_size: number
     ext_proxy_file_path?: string
-    cf_account_id?: string
-    cf_kv_namespace_id?: string
-    cf_api_token?: string
+    cf_mail_worker_url?: string
+    cf_mail_admin_password?: string
     max_concurrency: number
     // Outlook Manager
     outlook_manager_url?: string

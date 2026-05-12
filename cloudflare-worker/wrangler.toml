@@ -1,19 +1,27 @@
-name = "dreamina-email-worker"
-main = "src/index.ts"
+name = "dreamina-mail-worker"
+main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# 绑定 KV Namespace
-# 1. 创建 KV: wrangler kv:namespace create "EMAIL_CODES"
-# 2. 将返回的 id 填写到下方
-[[kv_namespaces]]
-binding = "EMAIL_CODES"
-id = "a45350a1d46042c7bff27097d35eed27"
+# R2 存储桶绑定
+# 1. 创建 R2 bucket: wrangler r2 bucket create mailboxes
+# 2. 将 bucket 名称填写到下方
+[[r2_buckets]]
+binding = "mailboxes"
+bucket_name = "mailboxes"
+
+# 环境变量
+[vars]
+EMAIL_DOMAIN = "boomstyleai.com"
+ADMIN_PASSWORD = "huigeai!@#123"
+
+# 自定义域名 (需要在 Cloudflare Dashboard > Workers > 设置中配置)
+# Custom Domain: mail.boomstyleai.com
+# 或使用 routes:
+# [[routes]]
+# pattern = "mail.boomstyleai.com/*"
+# zone_name = "boomstyleai.com"
 
 # Email 路由配置
-# 需要在 Cloudflare Dashboard 中配置 Email Routing
-# 设置 Catch-all 规则，将所有邮件转发到此 Worker
-
-# Email Worker 触发器 (必须配置才能接收邮件)
-# 1. 在 Cloudflare Dashboard > nanome.info > Email > Email Routing 中启用
-# 2. 设置 Catch-all address 规则，将所有邮件转发到此 Worker (dreamina-email-worker)
-# 3. 如果需要通过 API 访问，请在 Triggers > Custom Domains 中添加 nanome.info
+# 1. 在 Cloudflare Dashboard > boomstyleai.com > Email > Email Routing 中启用
+# 2. 设置 Catch-all address 规则，将所有邮件转发到此 Worker (dreamina-mail-worker)
+# 3. 在 Workers > dreamina-mail-worker > Settings > Custom Domains 添加 mail.boomstyleai.com

@@ -25,7 +25,7 @@ export default function SettingsPage() {
 
     const [secrets, setSecrets] = useState({
         clash_secret: '',
-        cf_api_token: ''
+        cf_mail_admin_password: ''
     })
 
     useEffect(() => {
@@ -38,7 +38,7 @@ export default function SettingsPage() {
             setSettings(data)
             setSecrets({
                 clash_secret: data.clash_secret || '',
-                cf_api_token: data.cf_api_token || ''
+                cf_mail_admin_password: data.cf_mail_admin_password || ''
             })
         } catch (error) {
             console.error('Failed to fetch settings:', error)
@@ -345,25 +345,19 @@ export default function SettingsPage() {
                         </CardHeader>
                         <CardContent className="space-y-4">
                             <div className="space-y-2">
-                                <Label>{t('settings.cf_acc_id')}</Label>
+                                <Label>{t('settings.cf_worker_url')}</Label>
                                 <Input
-                                    value={settings.cf_account_id || ''}
-                                    onChange={e => setSettings({ ...settings, cf_account_id: e.target.value })}
+                                    placeholder="https://mail.boomstyleai.com"
+                                    value={settings.cf_mail_worker_url || ''}
+                                    onChange={e => setSettings({ ...settings, cf_mail_worker_url: e.target.value })}
                                 />
                             </div>
                             <div className="space-y-2">
-                                <Label>{t('settings.kv_id')}</Label>
-                                <Input
-                                    value={settings.cf_kv_namespace_id || ''}
-                                    onChange={e => setSettings({ ...settings, cf_kv_namespace_id: e.target.value })}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <Label>{t('settings.cf_token')}</Label>
+                                <Label>{t('settings.cf_admin_password')}</Label>
                                 <Input
                                     type="password"
-                                    value={secrets.cf_api_token}
-                                    onChange={e => setSecrets({ ...secrets, cf_api_token: e.target.value })}
+                                    value={secrets.cf_mail_admin_password}
+                                    onChange={e => setSecrets({ ...secrets, cf_mail_admin_password: e.target.value })}
                                 />
                             </div>
                         </CardContent>

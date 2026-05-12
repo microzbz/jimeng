@@ -415,7 +415,7 @@ cd frontend && npm run dev
 | 配置组 | 必填项 |
 |--------|--------|
 | Clash 代理 | `CLASH_CONTROLLER_URL`, `CLASH_SECRET` |
-| Cloudflare | `CF_ACCOUNT_ID`, `CF_KV_NAMESPACE_ID`, `CF_API_TOKEN` |
+| CF Mail Worker | `CF_MAIL_WORKER_URL`, `CF_MAIL_ADMIN_PASSWORD` |
 | Dreamina | `DREAMINA_URL`, `JIMENG_API_URL` |
 | 任务 | `MAX_CONCURRENCY`, `MAX_RETRY_COUNT` |
 

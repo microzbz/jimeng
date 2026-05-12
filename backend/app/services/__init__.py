@@ -2,7 +2,7 @@
 Dreamina Auto Register - Services Module
 """
 from app.services.clash_manager import clash_manager, ClashManager
-from app.services.cloudflare_kv import cf_kv_client, CloudflareKVClient
+from app.services.cloudflare_kv import cf_kv_client, CloudflareMailClient
 from app.services.random_generator import (
     random_generator, 
     RandomGenerator,
@@ -17,9 +17,9 @@ __all__ = [
     # Clash
     "clash_manager",
     "ClashManager",
-    # Cloudflare KV
+    # CF Mail Worker
     "cf_kv_client",
-    "CloudflareKVClient",
+    "CloudflareMailClient",
     # Random Generator
     "random_generator",
     "RandomGenerator",

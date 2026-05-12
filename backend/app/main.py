@@ -125,15 +125,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Clash 连接失败，请检查 Clash Verge 是否运行")
 
-    # 检查 Cloudflare KV 配置
+    # 检查 CF Mail Worker 配置
     if cf_kv_client.is_configured:
         kv_test = await cf_kv_client.test_connection()
         if kv_test["success"]:
-            logger.info("Cloudflare KV 连接正常")
+            logger.info(f"CF Mail Worker 连接正常: {kv_test.get('message')}")
         else:
-            logger.warning(f"Cloudflare KV 连接失败: {kv_test.get('error')}")
+            logger.warning(f"CF Mail Worker 连接失败: {kv_test.get('error')}")
     else:
-        logger.warning("Cloudflare KV 未配置")
+        logger.warning("CF Mail Worker 未配置 (需设置 CF_MAIL_WORKER_URL 和 CF_MAIL_ADMIN_PASSWORD)")
 
     # 启动本地代理池 (如果配置)
     from app.services.proxy_pool_runner import pool_runner

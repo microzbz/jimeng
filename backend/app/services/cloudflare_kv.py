@@ -1,7 +1,9 @@
 """
-Dreamina Auto Register - Cloudflare KV 验证码获取服务 (Centralized Poller)
+Dreamina Auto Register - CF Mail Worker 验证码获取服务
+通过 CF Mail Worker 的 HTTP API 创建邮箱、轮询邮件、提取验证码
 """
 import asyncio
+import re
 import httpx
 from typing import Optional, Dict, Any, Set
 from datetime import datetime
@@ -10,147 +12,184 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 验证码提取正则: 6 位大写字母+数字
+CODE_PATTERN_SUBJECT = re.compile(r"\b([A-Z0-9]{6})\b")
+CODE_PATTERN_BODY = re.compile(r"[A-Za-z0-9]{6}")
 
-class CloudflareKVClient:
-    """Cloudflare KV 客户端 (支持聚合轮询)"""
-    
+
+class CloudflareMailClient:
+    """CF Mail Worker HTTP 客户端"""
+
     def __init__(self):
-        self.account_id = settings.cf_account_id
-        self.namespace_id = settings.cf_kv_namespace_id
-        self.api_token = settings.cf_api_token
-        self.poll_interval = settings.kv_poll_interval # 默认 3-5秒
-        self.poll_timeout = settings.kv_poll_timeout
         self._client: Optional[httpx.AsyncClient] = None
-        
+        # 邮箱 JWT 缓存: email -> jwt
+        self._jwt_cache: Dict[str, str] = {}
         # 聚合轮询相关
         self._pending_emails: Set[str] = set()
-        self._results_cache: Dict[str, str] = {} # email -> code
+        self._results_cache: Dict[str, str] = {}  # email -> code
         self._poller_task: Optional[asyncio.Task] = None
-        self._notify_events: Dict[str, asyncio.Event] = {} # email -> Event
+        self._notify_events: Dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
-    
+
     @property
     def base_url(self) -> str:
-        return f"https://api.cloudflare.com/client/v4/accounts/{self.account_id}/storage/kv/namespaces/{self.namespace_id}"
-    
+        url = (settings.cf_mail_worker_url or "").rstrip("/")
+        return url
+
     @property
-    def headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_token}",
-            "Content-Type": "application/json"
-        }
-    
+    def admin_password(self) -> str:
+        return settings.cf_mail_admin_password or ""
+
     @property
     def is_configured(self) -> bool:
-        """检查是否已配置"""
-        return all([self.account_id, self.namespace_id, self.api_token])
-    
+        return bool(self.base_url and self.admin_password)
+
     async def get_client(self) -> httpx.AsyncClient:
-        """获取 HTTP 客户端"""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                headers=self.headers,
-                timeout=30.0
-            )
+            self._client = httpx.AsyncClient(timeout=30.0)
         return self._client
-    
+
+    # ── Mailbox Management ──────────────────────────────────
+
+    async def create_mailbox(self, email: str) -> Optional[str]:
+        """
+        在 CF Mail Worker 上创建邮箱，返回 JWT。
+        如果已有缓存 JWT 则直接返回。
+        """
+        if email in self._jwt_cache:
+            return self._jwt_cache[email]
+
+        local_part, domain = email.rsplit("@", 1)
+        client = await self.get_client()
+
+        try:
+            resp = await client.post(
+                f"{self.base_url}/admin/new_address",
+                json={"name": local_part, "domain": domain},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-admin-auth": self.admin_password,
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                jwt = data.get("jwt")
+                if jwt:
+                    self._jwt_cache[email] = jwt
+                    logger.info(f"邮箱已创建: {email}")
+                    return jwt
+                else:
+                    logger.error(f"创建邮箱成功但未返回 JWT: {data}")
+            else:
+                logger.error(f"创建邮箱失败 [{resp.status_code}]: {resp.text}")
+        except Exception as e:
+            logger.error(f"创建邮箱异常: {e}")
+
+        return None
+
+    # ── Mail Polling ────────────────────────────────────────
+
+    async def _fetch_mails(self, email: str) -> Optional[list]:
+        """获取邮箱中的邮件列表"""
+        jwt = self._jwt_cache.get(email)
+        if not jwt:
+            return None
+
+        client = await self.get_client()
+        try:
+            resp = await client.get(
+                f"{self.base_url}/api/mails",
+                params={"limit": 5},
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("results", [])
+            elif resp.status_code == 401:
+                logger.warning(f"JWT 已过期: {email}, 尝试重新创建")
+                self._jwt_cache.pop(email, None)
+                new_jwt = await self.create_mailbox(email)
+                if new_jwt:
+                    resp2 = await client.get(
+                        f"{self.base_url}/api/mails",
+                        params={"limit": 5},
+                        headers={"Authorization": f"Bearer {new_jwt}"},
+                    )
+                    if resp2.status_code == 200:
+                        return resp2.json().get("results", [])
+            else:
+                logger.warning(f"获取邮件失败 [{resp.status_code}]: {resp.text}")
+        except Exception as e:
+            logger.error(f"获取邮件异常 ({email}): {e}")
+
+        return None
+
+    @staticmethod
+    def _extract_code_from_mail(mail: dict) -> Optional[str]:
+        """从单封邮件中提取 6 位验证码"""
+        # 优先从 subject 提取
+        subject = mail.get("subject", "")
+        match = CODE_PATTERN_SUBJECT.search(subject)
+        if match:
+            return match.group(1)
+
+        # 从 raw 正文提取
+        raw = mail.get("raw", "")
+        # 先尝试精确匹配大写
+        match = CODE_PATTERN_SUBJECT.search(raw)
+        if match:
+            return match.group(1)
+
+        # 兜底: 任意大小写 6 字符
+        all_matches = CODE_PATTERN_BODY.findall(raw)
+        if all_matches:
+            return all_matches[0].upper()
+
+        return None
+
+    async def _check_email_for_code(self, email: str) -> Optional[str]:
+        """检查某个邮箱是否收到包含验证码的邮件"""
+        mails = await self._fetch_mails(email)
+        if not mails:
+            return None
+
+        for mail in mails:
+            code = self._extract_code_from_mail(mail)
+            if code:
+                return code
+
+        return None
+
+    # ── Aggregated Poller ───────────────────────────────────
+
     async def _poller_loop(self):
-        """后台轮询循环"""
-        logger.info("KV 聚合轮询器已启动")
+        """后台聚合轮询循环"""
+        logger.info("CF Mail 聚合轮询器已启动")
         while True:
             try:
                 if not self._pending_emails:
-                    # 如果没有等待的任务，稍微休眠长一点，或者直接等待
                     await asyncio.sleep(1.0)
                     continue
-                
-                # 收集当前需要查询的 key
-                # 策略:
-                # 1. 如果 keys 数量少 (<10)，可以使用 Multi-Get (API并行)
-                # 2. 如果 keys 数量多，应该使用 List Keys API 拿所有最近更新的
-                
-                # 这里为了简单且尽量少用额度，我们采用并发 Get 模式，但限制并发数
-                # 或者如果有 List API，List 是更好的（一次请求拿所有）
-                
-                # 使用 List API 拿前缀 (假设 key 就是 email)
-                # KV List API 支持 prefix，但不支持 multiple keys
-                # 如果 email 前缀分散，List 效率低。
-                
-                # 折中方案：对每个 pending email 发起一次 Get，但控制在此 Loop 内
-                # 这样 20 个任务 每 3 秒 轮询一次，仍然是 20 QPS
-                # 还是有点高。
-                
-                # 优化：Cloudflare KV 写入延迟通常在 1s-60s
-                # 如果我们能 List namespace keys limited to recent time? 不支持
-                
-                # 既然用户担心 concurrency rate limit，我们必须聚合。
-                # 假设所有注册用的 email 都有统一前缀 (例如 "reg_")
-                # 那么我们可以 list keys with prefix="reg_"
-                
-                # 这里先实现：并发 Get，但通过 Semaphore 限制速率
-                
+
                 current_emails = list(self._pending_emails)
-                # 每次轮询 最多处理 5 个并发请求，避免突发
-                # 实际上这个 Loop 应该每 3 秒运行一次“批次”
-                
-                results = await self._batch_get_values(current_emails)
-                
-                for email, code in results.items():
-                    if code:
-                        self._results_cache[email] = code
-                        # 触发事件
-                        if email in self._notify_events:
-                            self._notify_events[email].set()
-                        # 从 pending 中移除 (在 poll_verification_code 中移除更安全? 不，这里移除防止重复查询)
-                        async with self._lock:
-                            if email in self._pending_emails:
-                                self._pending_emails.remove(email)
-                                logger.info(f"聚合轮询: 成功获取 {email} -> {code}")
-                
+
+                for email in current_emails:
+                    try:
+                        code = await self._check_email_for_code(email)
+                        if code:
+                            self._results_cache[email] = code
+                            if email in self._notify_events:
+                                self._notify_events[email].set()
+                            async with self._lock:
+                                self._pending_emails.discard(email)
+                            logger.info(f"聚合轮询: 成功获取验证码 {email} -> {code}")
+                    except Exception as e:
+                        logger.error(f"轮询邮箱 {email} 失败: {e}")
+
             except Exception as e:
-                logger.error(f"KV 轮询循环异常: {e}")
-            
-            await asyncio.sleep(self.poll_interval)
+                logger.error(f"Mail 轮询循环异常: {e}")
 
-    async def _batch_get_values(self, emails: list) -> Dict[str, str]:
-        """批量获取值"""
-        results = {}
-        client = await self.get_client()
-        
-        async def fetch(email):
-            try:
-                resp = await client.get(f"{self.base_url}/values/{email}")
-                if resp.status_code == 200:
-                    val = resp.text
-                    # 简单解析
-                    if "code" in val:
-                         import json
-                         try:
-                             data = json.loads(val)
-                             return email, str(data.get("code") or data.get("verification_code"))
-                         except:
-                             pass
-                    if len(val) == 6:
-                        return email, val
-                return email, None
-            except:
-                return email, None
-
-        # 限制并发为 5
-        tasks = []
-        # 分批处理
-        chunk_size = 5
-        for i in range(0, len(emails), chunk_size):
-            chunk = emails[i:i+chunk_size]
-            tasks = [fetch(e) for e in chunk]
-            batch_results = await asyncio.gather(*tasks)
-            for e, c in batch_results:
-                if c:
-                    results[e] = c
-            # 小暂停，遵守速率限制
-            await asyncio.sleep(0.5)
-            
-        return results
+            await asyncio.sleep(settings.kv_poll_interval)
 
     async def start_poller(self):
         if self._poller_task is None or self._poller_task.done():
@@ -161,63 +200,72 @@ class CloudflareKVClient:
             self._poller_task.cancel()
             try:
                 await self._poller_task
-            except:
+            except (asyncio.CancelledError, Exception):
                 pass
             self._poller_task = None
-            
-    async def poll_verification_code(self, email: str, timeout: Optional[int] = None) -> Optional[str]:
+
+    async def poll_verification_code(
+        self, email: str, timeout: Optional[int] = None
+    ) -> Optional[str]:
         """
         等待验证码 (聚合版)
+        调用前必须先 create_mailbox() 确保邮箱和 JWT 存在。
         """
         if timeout is None:
-            timeout = self.poll_timeout # 60s
-            
-        # 1. 加入等待队列
+            timeout = settings.kv_poll_timeout
+
+        # 确保邮箱已创建 (幂等)
+        if email not in self._jwt_cache:
+            jwt = await self.create_mailbox(email)
+            if not jwt:
+                logger.error(f"无法为 {email} 创建邮箱，放弃轮询")
+                return None
+
         event = asyncio.Event()
         async with self._lock:
             self._pending_emails.add(email)
             self._notify_events[email] = event
-            # 确保 Poller 运行
             await self.start_poller()
-            
-        # 2. 等待 Event 或超时
+
         try:
-            # 检查缓存（可能已经由 Poller 获取）
             if email in self._results_cache:
                 return self._results_cache.pop(email)
-                
+
             await asyncio.wait_for(event.wait(), timeout=timeout)
             return self._results_cache.pop(email, None)
-            
+
         except asyncio.TimeoutError:
             logger.warning(f"验证码等待超时: {email}")
             async with self._lock:
-                if email in self._pending_emails:
-                    self._pending_emails.remove(email)
-                if email in self._notify_events:
-                    del self._notify_events[email]
+                self._pending_emails.discard(email)
+                self._notify_events.pop(email, None)
             return None
-            
-    async def close(self):
-        """关闭客户端"""
-        await self.stop_poller()
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-    
-    # ... 保留 test_connection 等辅助方法 ...
+
+    # ── Lifecycle ───────────────────────────────────────────
+
     async def test_connection(self) -> Dict[str, Any]:
-        """测试连接"""
+        """测试 Worker 连接"""
         try:
             client = await self.get_client()
-            # 尝试列出 key verify access
-            resp = await client.get(f"{self.base_url}/keys?limit=10")
+            resp = await client.get(f"{self.base_url}/healthz")
             if resp.status_code == 200:
-                return {"success": True, "message": "Connection successful"}
+                data = resp.json()
+                return {
+                    "success": True,
+                    "message": f"Worker 连接正常, domain={data.get('emailDomain')}",
+                }
             else:
                 return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def close(self):
+        """关闭客户端"""
+        await self.stop_poller()
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+        self._jwt_cache.clear()
 
-# 全局实例
-cf_kv_client = CloudflareKVClient()
+
+# 全局实例 (保持 cf_kv_client 名称以兼容现有 import)
+cf_kv_client = CloudflareMailClient()

@@ -374,6 +374,219 @@ class RegisterEngine:
         """截图（已禁用，保留兼容返回）"""
         return ""
 
+    async def _collect_credits_in_browser(
+        self, page: Page, human: HumanBehavior, email: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        在浏览器内直接领取首次积分（绕过 shark 风控）。
+        注册完成后浏览器 session 还有效，导航到首页触发积分弹窗并点击领取。
+        """
+        credits_info = {"collected": False, "total": 0}
+        captured_credits = {}
+
+        async def _intercept_credit_response(response):
+            """拦截积分相关 API 响应"""
+            try:
+                url = response.url
+                if "credit_receive" in url or "user_credit" in url:
+                    body = await response.json()
+                    data = body.get("data", body)
+                    if "receive_quota" in str(data):
+                        quota = data.get("receive_quota", 0)
+                        if quota > 0:
+                            captured_credits["received"] = quota
+                            logger.info(f"[{email}] 拦截到积分领取: {quota}")
+                    if "credit" in str(data):
+                        credit = data.get("credit", {})
+                        if credit:
+                            captured_credits["gift"] = credit.get("gift_credit", 0)
+                            captured_credits["purchase"] = credit.get("purchase_credit", 0)
+                            captured_credits["vip"] = credit.get("vip_credit", 0)
+                            total = (
+                                captured_credits["gift"]
+                                + captured_credits["purchase"]
+                                + captured_credits["vip"]
+                            )
+                            captured_credits["total"] = total
+                            logger.info(f"[{email}] 拦截到积分信息: {captured_credits}")
+            except Exception:
+                pass
+
+        try:
+            # 注册网络拦截器
+            page.on("response", _intercept_credit_response)
+
+            # 导航到首页（积分领取入口）
+            logger.info(f"[{email}] 导航到首页领取积分...")
+            await page.goto(
+                "https://dreamina.capcut.com/ai-tool/home",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await human.reading_pause(3.0, 5.0)
+
+            # 策略1: 检测首页弹出的每日积分领取弹窗并点击
+            collect_selectors = [
+                # 常见的领取/Collect/Claim 按钮
+                'button:has-text("Collect")',
+                'button:has-text("Claim")',
+                'button:has-text("Receive")',
+                'button:has-text("Get")',
+                'button:has-text("领取")',
+                'button:has-text("收取")',
+                # 弹窗内的确认按钮
+                '[class*="modal"] button[class*="primary"]',
+                '[class*="dialog"] button[class*="primary"]',
+                '[class*="popup"] button[class*="confirm"]',
+                '[class*="reward"] button',
+                '[class*="credit"] button',
+                '[class*="checkin"] button',
+            ]
+
+            collected = False
+            for sel in collect_selectors:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.is_visible(timeout=2000):
+                        await human.reading_pause(0.5, 1.0)
+                        await loc.click(timeout=3000)
+                        collected = True
+                        logger.info(f"[{email}] 点击了积分领取按钮: {sel}")
+                        await human.reading_pause(2.0, 3.0)
+                        break
+                except Exception:
+                    continue
+
+            if not collected:
+                # 策略2: 导航到积分页面尝试领取
+                logger.info(f"[{email}] 首页无弹窗，尝试导航到积分页...")
+                try:
+                    # 点击头像/用户菜单
+                    avatar_selectors = [
+                        '[class*="avatar"]',
+                        '[class*="user-info"]',
+                        '[class*="profile"]',
+                    ]
+                    for sel in avatar_selectors:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.is_visible(timeout=2000):
+                                await loc.click(timeout=3000)
+                                await human.reading_pause(1.0, 2.0)
+                                break
+                        except Exception:
+                            continue
+
+                    # 在菜单中找积分/Credits入口
+                    menu_selectors = [
+                        ':text("Credits")',
+                        ':text("Points")',
+                        ':text("积分")',
+                        'a[href*="credit"]',
+                        'a[href*="point"]',
+                    ]
+                    for sel in menu_selectors:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.is_visible(timeout=2000):
+                                await loc.click(timeout=3000)
+                                await human.reading_pause(2.0, 3.0)
+                                break
+                        except Exception:
+                            continue
+
+                    # 再次尝试点击领取按钮
+                    for sel in collect_selectors:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.is_visible(timeout=2000):
+                                await loc.click(timeout=3000)
+                                collected = True
+                                logger.info(
+                                    f"[{email}] 在积分页点击了领取按钮: {sel}"
+                                )
+                                await human.reading_pause(2.0, 3.0)
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"[{email}] 积分页导航失败: {e}")
+
+            if not collected:
+                # 策略3: 拦截网络请求方式 - 触发页面内的积分弹窗
+                logger.info(f"[{email}] 尝试通过页面交互触发积分领取...")
+                try:
+                    # 刷新页面触发弹窗（首页加载时可能自动弹出积分领取）
+                    await page.reload(wait_until="networkidle", timeout=30000)
+                    await human.reading_pause(3.0, 5.0)
+
+                    # 再次尝试所有收集按钮
+                    for sel in collect_selectors:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.is_visible(timeout=1500):
+                                await loc.click(timeout=3000)
+                                collected = True
+                                logger.info(
+                                    f"[{email}] 刷新后点击了领取按钮: {sel}"
+                                )
+                                await human.reading_pause(2.0, 3.0)
+                                break
+                        except Exception:
+                            continue
+                except Exception as e:
+                    logger.debug(f"[{email}] 页面交互领取失败: {e}")
+
+            credits_info["collected"] = collected
+
+            # 尝试从页面 DOM 中读取积分显示
+            try:
+                credit_text = await page.evaluate("""
+                    () => {
+                        // 尝试从页面上找积分数字
+                        const selectors = [
+                            '[class*="credit"] [class*="num"]',
+                            '[class*="credit"] [class*="count"]',
+                            '[class*="point"] [class*="num"]',
+                            '[class*="balance"]',
+                        ];
+                        for (const sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.textContent) {
+                                const num = parseInt(el.textContent.replace(/[^0-9]/g, ''));
+                                if (!isNaN(num) && num > 0) return num;
+                            }
+                        }
+                        // 尝试从整个页面文字中抓取积分数值
+                        const body = document.body.innerText;
+                        const match = body.match(/(\d+)\s*(credits?|points?|积分)/i);
+                        if (match) return parseInt(match[1]);
+                        return 0;
+                    }
+                """)
+                if credit_text and credit_text > 0:
+                    credits_info["total"] = credit_text
+                    credits_info["gift"] = credit_text
+                    logger.info(f"[{email}] 页面显示积分: {credit_text}")
+            except Exception as e:
+                logger.debug(f"[{email}] 读取页面积分失败: {e}")
+
+        except Exception as e:
+            logger.warning(f"[{email}] 浏览器内积分领取异常: {e}")
+        finally:
+            # 移除拦截器
+            try:
+                page.remove_listener("response", _intercept_credit_response)
+            except Exception:
+                pass
+
+        # 合并拦截到的积分数据
+        if captured_credits.get("total", 0) > 0:
+            credits_info.update(captured_credits)
+            credits_info["collected"] = True
+
+        return credits_info
+
     async def execute_registration(
         self,
         db: AsyncSession,
@@ -957,7 +1170,24 @@ class RegisterEngine:
             await self.browser_stealth.save_state(context, str(state_path))
             result["browser_state_path"] = str(state_path)
 
-            # 12. 模拟浏览欢迎页 (增加权重)
+            # 12. 浏览器内领取首次积分（绕过 shark 风控）
+            if extracted.get("session_id"):
+                try:
+                    logger.info(f"[{email}] 尝试在浏览器内领取首次积分...")
+                    credits_result = await self._collect_credits_in_browser(
+                        page, human, email
+                    )
+                    if credits_result:
+                        result["browser_credits"] = credits_result
+                        logger.info(
+                            f"[{email}] 浏览器内积分领取完成: {credits_result}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"[{email}] 浏览器内领取积分失败（不影响注册）: {e}"
+                    )
+
+            # 13. 模拟浏览欢迎页 (增加权重)
             await human.scroll_randomly(distance=random.randint(200, 500))
             await human.reading_pause(2.0, 5.0)
 
@@ -1040,6 +1270,11 @@ class RegisterEngine:
             domain = random.choice(domains)
             if not email:
                 email = f"{generate_email_prefix(task.email_prefix_pattern)}@{domain.domain}"
+
+            # 在 CF Mail Worker 上预创建邮箱，确保 Worker 能接收验证邮件
+            jwt = await cf_kv_client.create_mailbox(email)
+            if not jwt:
+                logger.warning(f"CF Mail Worker 邮箱创建失败: {email}，注册可能无法获取验证码")
         elif email_source == "outlook":
             # Outlook 模式：邮箱已在 create_task 时分配，直接使用
             if not email:
@@ -1121,59 +1356,78 @@ class RegisterEngine:
                     mailbox.last_used_at = datetime.utcnow()
                     logger.info(f"[Outlook] 邮箱 {email} 注册成功，已禁用")
 
-            # 自动签到领取积分（利用当前代理）
+            # 自动签到领取积分
             if account.session_id:
-                try:
-                    # 构造代理 URL
-                    proxy_url = None
-                    if proxy_config:
-                        is_direct = (
-                            proxy_config.group == "external"
-                            or proxy_config.host == "127.0.0.1"
-                        )
-                        if is_direct:
-                            protocol = proxy_config.protocol or "http"
-                            proxy_url = (
-                                f"{protocol}://{proxy_config.host}:{proxy_config.port}"
-                            )
-                        else:
-                            protocol = settings.clash_proxy_protocol or "http"
-                            proxy_url = (
-                                f"{protocol}://127.0.0.1:{settings.clash_proxy_port}"
-                            )
-
-                    client = JimengClient(
-                        account.session_id, region=region, proxy_url=proxy_url
-                    )
+                # 优先使用浏览器内领取的积分结果（绕过 shark 风控）
+                browser_credits = reg_result.get("browser_credits")
+                if browser_credits and browser_credits.get("total", 0) > 0:
+                    account.credits_gift = browser_credits.get("gift", 0)
+                    account.credits_purchase = browser_credits.get("purchase", 0)
+                    account.credits_vip = browser_credits.get("vip", 0)
+                    account.credits_total = browser_credits.get("total", 0)
+                    account.last_checkin_at = datetime.utcnow()
+                    account.gen_enabled = True
+                    account.gen_enabled_at = datetime.utcnow()
                     logger.info(
-                        f"注册成功后自动签到: {email} (代理: {proxy_url}, 区域: {region})"
+                        f"浏览器内积分领取成功: {email} → 积分 {account.credits_total}"
                     )
+                else:
+                    # 兜底: 通过 API 尝试签到
+                    try:
+                        proxy_url = None
+                        if proxy_config:
+                            is_direct = (
+                                proxy_config.group == "external"
+                                or proxy_config.host == "127.0.0.1"
+                            )
+                            if is_direct:
+                                protocol = proxy_config.protocol or "http"
+                                proxy_url = (
+                                    f"{protocol}://{proxy_config.host}:{proxy_config.port}"
+                                )
+                            else:
+                                protocol = settings.clash_proxy_protocol or "http"
+                                proxy_url = (
+                                    f"{protocol}://127.0.0.1:{settings.clash_proxy_port}"
+                                )
 
-                    received = await client.daily_checkin()
-                    if received and received.get("success"):
-                        credits = received.get("credits", {})
-                        account.credits_gift = credits.get("gift", 0)
-                        account.credits_purchase = credits.get("purchase", 0)
-                        account.credits_vip = credits.get("vip", 0)
-                        account.credits_total = credits.get("total", 0)
-                        account.last_checkin_at = datetime.utcnow()
-                        logger.info(
-                            f"自动签到成功: {email} → 积分 {account.credits_total}"
+                        client = JimengClient(
+                            account.session_id, region=region, proxy_url=proxy_url
                         )
-                    else:
-                        # 签到无积分时，尝试获取当前积分
-                        credits = await client.get_credits()
-                        if credits:
+                        logger.info(
+                            f"API 签到兜底: {email} (代理: {proxy_url}, 区域: {region})"
+                        )
+
+                        received = await client.daily_checkin()
+                        if received and received.get("success"):
+                            credits = received.get("credits", {})
                             account.credits_gift = credits.get("gift", 0)
                             account.credits_purchase = credits.get("purchase", 0)
                             account.credits_vip = credits.get("vip", 0)
                             account.credits_total = credits.get("total", 0)
-                        account.last_checkin_at = datetime.utcnow()
-                        logger.info(
-                            f"自动签到完成（无新增积分），当前积分: {account.credits_total}"
-                        )
-                except Exception as e:
-                    logger.warning(f"自动签到失败 ({email}): {e}，不影响注册结果")
+                            account.last_checkin_at = datetime.utcnow()
+                            if account.credits_total > 0:
+                                account.gen_enabled = True
+                                account.gen_enabled_at = datetime.utcnow()
+                            logger.info(
+                                f"API 签到成功: {email} → 积分 {account.credits_total}"
+                            )
+                        else:
+                            credits = await client.get_credits()
+                            if credits:
+                                account.credits_gift = credits.get("gift", 0)
+                                account.credits_purchase = credits.get("purchase", 0)
+                                account.credits_vip = credits.get("vip", 0)
+                                account.credits_total = credits.get("total", 0)
+                                if account.credits_total > 0:
+                                    account.gen_enabled = True
+                                    account.gen_enabled_at = datetime.utcnow()
+                            account.last_checkin_at = datetime.utcnow()
+                            logger.info(
+                                f"API 签到完成（无新增积分），当前积分: {account.credits_total}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"API 签到失败 ({email}): {e}，不影响注册结果")
         elif reg_result.get("interrupted"):
             account.status = "cancelled"
             account.failure_reason = "Manual stop/pause"

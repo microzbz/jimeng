@@ -214,9 +214,8 @@ export const translations = {
         'settings.pool_start': 'Start Port',
         'settings.pool_size': 'Pool Size',
         'settings.ext_proxy_path': 'External Proxy File Path',
-        'settings.cf_acc_id': 'Cloudflare Account ID',
-        'settings.kv_id': 'KV Namespace ID',
-        'settings.cf_token': 'Cloudflare API Token',
+        'settings.cf_worker_url': 'CF Mail Worker URL',
+        'settings.cf_admin_password': 'CF Mail Admin Password',
         'settings.volatile_title': 'Volatile Environment Advisory',
         'settings.volatile_desc': 'Modifying parameters will update running config and persist to .env. Service restart may be required.',
 
@@ -274,9 +273,8 @@ export const translations = {
         'settings.pool_start': '起始端口',
         'settings.pool_size': '端口数量',
         'settings.ext_proxy_path': '外部代理文件路径',
-        'settings.cf_acc_id': 'Cloudflare Account ID',
-        'settings.kv_id': 'KV Namespace ID',
-        'settings.cf_token': 'Cloudflare API Token',
+        'settings.cf_worker_url': 'CF Mail Worker 地址',
+        'settings.cf_admin_password': 'CF Mail 管理密码',
         'settings.volatile_title': '环境配置警告',
         'settings.volatile_desc': '修改参数将更新运行配置并尝试持久化到 .env 文件。某些更改可能需要重启服务才能完全生效。',
 
